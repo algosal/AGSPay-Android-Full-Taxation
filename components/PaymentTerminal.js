@@ -22,78 +22,110 @@ export default function PaymentTerminal({defaultAmount = 10}) {
   const [amountInput, setAmountInput] = useState(String(defaultAmount));
   const [loading, setLoading] = useState(false);
 
+  const CREATE_INTENT_URL =
+    'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
+
+  function resolveClientSecretFromApi(payload) {
+    if (!payload) return null;
+
+    // Preferred: { client_secret: "..." }
+    if (payload.client_secret) return payload.client_secret;
+    if (payload.clientSecret) return payload.clientSecret;
+
+    // Sometimes (non-proxy mapping): { body: "{\"client_secret\":\"...\"}" }
+    if (typeof payload.body === 'string') {
+      try {
+        const inner = JSON.parse(payload.body);
+        if (inner?.client_secret) return inner.client_secret;
+        if (inner?.clientSecret) return inner.clientSecret;
+      } catch (e) {
+        console.log(
+          'resolveClientSecret: failed to parse payload.body JSON:',
+          e,
+        );
+      }
+    }
+
+    // Sometimes: { body: { client_secret: "..." } }
+    if (payload.body && typeof payload.body === 'object') {
+      if (payload.body.client_secret) return payload.body.client_secret;
+      if (payload.body.clientSecret) return payload.body.clientSecret;
+    }
+
+    return null;
+  }
+
   const handleCharge = async () => {
+    let parsed = null;
+
     try {
       if (!connectedReader) {
         Alert.alert(
           'No reader connected',
-          'Please connect the Tap to Pay reader first.',
+          'Please connect Tap to Pay on this phone first.',
         );
         return;
       }
 
-      const parsed = parseFloat(amountInput.replace(',', '.'));
-      if (isNaN(parsed) || parsed <= 0) {
-        Alert.alert('Invalid amount', 'Please enter a valid amount.');
+      parsed = parseFloat(String(amountInput).replace(',', '.'));
+      if (Number.isNaN(parsed) || parsed <= 0) {
+        Alert.alert(
+          'Invalid amount',
+          'Please enter a valid amount greater than 0.',
+        );
         return;
       }
 
       const amountInCents = Math.round(parsed * 100);
       setLoading(true);
 
-      console.log('Creating PaymentIntent for amount (cents):', amountInCents);
+      console.log('------------------------------------------');
+      console.log('Creating Terminal PaymentIntent (cents):', amountInCents);
 
-      // 1️⃣ Ask backend to create a PaymentIntent for Terminal
-      const resp = await fetch(
-        'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent',
-        {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            amount: amountInCents,
-            currency: 'usd',
-          }),
-        },
-      );
+      // 1) Ask backend to create a Terminal PaymentIntent
+      const resp = await fetch(CREATE_INTENT_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        // Flat body (recommended)
+        body: JSON.stringify({
+          amount: amountInCents,
+          currency: 'usd',
+        }),
+      });
+
+      const rawText = await resp.text();
+      console.log('Create-intent HTTP status:', resp.status);
+      console.log('Create-intent raw response text:', rawText);
 
       if (!resp.ok) {
-        const text = await resp.text();
-        console.log('Create PI HTTP error:', resp.status, text);
-        Alert.alert('Error', 'Failed to create PaymentIntent.');
-        setLoading(false);
+        Alert.alert(
+          'Create PaymentIntent failed',
+          `HTTP ${resp.status}. Check logs for details.`,
+        );
         return;
       }
 
-      const piData = await resp.json();
-      console.log('Create PaymentIntent response:', piData);
-
-      // Outer shape: { statusCode, headers, body: "{\"client_secret\":\"...\"}" }
-      let clientSecret = null;
-
+      let piData = null;
       try {
-        if (typeof piData.body === 'string') {
-          const inner = JSON.parse(piData.body);
-          console.log('Parsed inner PI body:', inner);
-          clientSecret = inner.client_secret || inner.clientSecret || null;
-        } else if (piData.client_secret || piData.clientSecret) {
-          clientSecret = piData.client_secret || piData.clientSecret;
-        }
+        piData = rawText ? JSON.parse(rawText) : null;
       } catch (e) {
-        console.log('Error parsing PaymentIntent inner body:', e);
+        console.log('Failed to parse create-intent JSON:', e);
       }
 
-      console.log('Resolved clientSecret from backend:', clientSecret);
+      console.log('Create PaymentIntent parsed response:', piData);
+
+      const clientSecret = resolveClientSecretFromApi(piData);
+      console.log('Resolved clientSecret:', clientSecret);
 
       if (!clientSecret) {
         Alert.alert(
           'Error',
-          'Backend did not return a client_secret for the PaymentIntent.',
+          'Backend did not return client_secret. Fix API Gateway mapping or Lambda response.',
         );
-        setLoading(false);
         return;
       }
 
-      // 2️⃣ Retrieve the PaymentIntent using the client_secret
+      // 2) Retrieve PaymentIntent on device
       const {paymentIntent: retrievedPI, error: retrieveError} =
         await retrievePaymentIntent(clientSecret);
 
@@ -102,19 +134,15 @@ export default function PaymentTerminal({defaultAmount = 10}) {
         Alert.alert(
           'Retrieve failed',
           retrieveError.message ||
-            'Failed to retrieve PaymentIntent on the device.',
+            'Failed to retrieve PaymentIntent on device.',
         );
-        setLoading(false);
         return;
       }
 
       console.log('Retrieved PaymentIntent:', retrievedPI);
 
-      // 3️⃣ Collect the payment method using the reader
-      Alert.alert(
-        'Ready',
-        'Tap a (test) card on the device to collect the payment method.',
-      );
+      // 3) Collect payment method (Tap to Pay on phone)
+      Alert.alert('Ready', 'Tap a card on the phone to collect payment.');
 
       const {paymentIntent: collectedPI, error: collectError} =
         await collectPaymentMethod({paymentIntent: retrievedPI});
@@ -125,13 +153,12 @@ export default function PaymentTerminal({defaultAmount = 10}) {
           'Collect failed',
           collectError.message || 'Failed to collect payment method.',
         );
-        setLoading(false);
         return;
       }
 
-      console.log('Collected payment method. PaymentIntent:', collectedPI);
+      console.log('Collected payment method. PI:', collectedPI);
 
-      // 4️⃣ Confirm the payment
+      // 4) Confirm PaymentIntent
       const {paymentIntent: confirmedPI, error: confirmError} =
         await confirmPaymentIntent({paymentIntent: collectedPI});
 
@@ -141,15 +168,15 @@ export default function PaymentTerminal({defaultAmount = 10}) {
           'Confirm failed',
           confirmError.message || 'Failed to confirm payment.',
         );
-        setLoading(false);
         return;
       }
 
       console.log('Confirmed PaymentIntent:', confirmedPI);
-      Alert.alert('Success', `Payment of $${parsed.toFixed(2)} completed ✅`);
+
+      Alert.alert('Success', `Payment of $${parsed.toFixed(2)} completed.`);
     } catch (err) {
-      console.log('handleCharge error:', err);
-      Alert.alert('Error', String(err));
+      console.log('handleCharge unexpected error:', err);
+      Alert.alert('Error', String(err?.message || err));
     } finally {
       setLoading(false);
     }
@@ -162,11 +189,14 @@ export default function PaymentTerminal({defaultAmount = 10}) {
       <Text style={styles.label}>Connected reader:</Text>
       <Text style={styles.value}>
         {connectedReader
-          ? connectedReader.label || 'Simulated Tap to Pay reader'
+          ? connectedReader.label || 'Tap to Pay (Phone)'
           : 'None'}
       </Text>
 
-      <Text style={[styles.label, {marginTop: 16}]}>Amount (USD):</Text>
+      <Text style={[styles.label, {marginTop: 16, color: 'white'}]}>
+        Amount (USD):
+      </Text>
+
       <View style={styles.row}>
         <Text style={styles.dollar}>$</Text>
         <TextInput
@@ -175,6 +205,7 @@ export default function PaymentTerminal({defaultAmount = 10}) {
           value={amountInput}
           onChangeText={setAmountInput}
           placeholder="10"
+          placeholderTextColor="#888"
         />
       </View>
 
@@ -192,7 +223,7 @@ export default function PaymentTerminal({defaultAmount = 10}) {
 
       {!connectedReader && (
         <Text style={styles.helper}>
-          Connect the Tap to Pay reader above before charging.
+          Connect Tap to Pay on this phone before charging.
         </Text>
       )}
     </View>
@@ -211,14 +242,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 8,
     textAlign: 'center',
+    color: 'white',
   },
   label: {
     fontSize: 14,
-    opacity: 0.8,
+    opacity: 0.85,
+    color: '#d1d5db',
   },
   value: {
     fontSize: 14,
     fontWeight: '500',
+    color: '#f9fafb',
   },
   row: {
     flexDirection: 'row',
@@ -228,20 +262,23 @@ const styles = StyleSheet.create({
   dollar: {
     fontSize: 20,
     marginRight: 4,
+    color: 'white',
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: '#374151',
     borderRadius: 6,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
     fontSize: 18,
-    minWidth: 80,
+    minWidth: 120,
+    color: 'white',
+    backgroundColor: '#020617',
   },
   helper: {
     marginTop: 10,
     fontSize: 12,
-    color: '#888',
+    color: '#9ca3af',
     textAlign: 'center',
   },
 });
