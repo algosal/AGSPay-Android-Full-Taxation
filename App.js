@@ -32,8 +32,6 @@ const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 const API_BASE =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe';
 
-const KEYCHAIN_AUTH_SERVICE = 'agpayAuthToken';
-
 // -----------------------------------------------------------------------------
 // STRIPE CONNECTION TOKEN
 // -----------------------------------------------------------------------------
@@ -212,39 +210,37 @@ function TerminalScreen({paymentNote, setPaymentNote, onLogout}) {
 }
 
 // -----------------------------------------------------------------------------
-// APP ROOT (LOGIN + LOGOUT WORK)
+// APP ROOT (PERSISTENT LOGIN VIA KEYCHAIN GENERIC PASSWORD)
 // -----------------------------------------------------------------------------
 
 export default function App() {
   const [paymentNote, setPaymentNote] = useState('');
   const [authed, setAuthed] = useState(false);
 
+  // ✅ On app launch, check if a session exists
   useEffect(() => {
-    Keychain.getInternetCredentials(KEYCHAIN_AUTH_SERVICE).then(creds => {
-      if (creds?.password) setAuthed(true);
-    });
+    (async () => {
+      try {
+        const creds = await Keychain.getGenericPassword();
+        console.log('BOOT Keychain generic =>', creds);
+        setAuthed(!!creds);
+      } catch (e) {
+        console.log('Keychain boot read error:', e);
+        setAuthed(false);
+      }
+    })();
   }, []);
 
-  // useEffect(() => {
-  //   console.log('AUTH STATE:', authed);
-  // }, [authed]);
-
-  // const handleLogout = async () => {
-  //   alert('Logged out');
-  //   await Keychain.resetInternetCredentials(KEYCHAIN_AUTH_SERVICE);
-  //   setAuthed(false);
-  // };
+  // ✅ Logout clears session
   const handleLogout = async () => {
     try {
-      await Keychain.resetInternetCredentials({
-        service: 'agpayAuthToken',
-      });
-
-      setAuthed(false); // ⬅ THIS switches screen
-      setPaymentNote(''); // optional cleanup
+      const reset = await Keychain.resetGenericPassword();
+      console.log('Logout resetGenericPassword =>', reset);
     } catch (e) {
       console.log('Logout error:', e);
-      setAuthed(false); // still force logout UI
+    } finally {
+      setAuthed(false);
+      setPaymentNote('');
     }
   };
 

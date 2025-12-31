@@ -7,25 +7,53 @@ import {
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
+import * as Keychain from 'react-native-keychain';
 
 export default function Login({onLoginSuccess}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleContinue = async () => {
+    try {
+      if (!email.trim() || !password) {
+        Alert.alert('Missing info', 'Enter email and password.');
+        return;
+      }
+
+      setSaving(true);
+
+      // Persist "session" (for now). Later you can store a real auth token here.
+      await Keychain.setGenericPassword(
+        email.trim().toLowerCase(),
+        'logged_in',
+        {
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
+        },
+      );
+
+      onLoginSuccess();
+    } catch (e) {
+      console.log('Login Keychain save error:', e);
+      Alert.alert('Error', 'Failed to save login session.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <KeyboardAvoidingView
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.card}>
-        {/* Brand */}
         <Text style={styles.logo}>
           <Text style={styles.logoGold}>AG</Text>Pay
         </Text>
         <Text style={styles.subtitle}>Secure · Fast · In-Person Payments</Text>
 
-        {/* Email */}
         <View style={styles.field}>
           <Text style={styles.label}>Email</Text>
           <TextInput
@@ -40,7 +68,6 @@ export default function Login({onLoginSuccess}) {
           />
         </View>
 
-        {/* Password */}
         <View style={styles.field}>
           <Text style={styles.label}>Password</Text>
 
@@ -63,12 +90,15 @@ export default function Login({onLoginSuccess}) {
           </View>
         </View>
 
-        {/* Login */}
-        <TouchableOpacity style={styles.loginBtn} onPress={onLoginSuccess}>
-          <Text style={styles.loginText}>Continue</Text>
+        <TouchableOpacity
+          style={[styles.loginBtn, saving && {opacity: 0.6}]}
+          onPress={handleContinue}
+          disabled={saving}>
+          <Text style={styles.loginText}>
+            {saving ? 'Saving…' : 'Continue'}
+          </Text>
         </TouchableOpacity>
 
-        {/* Footer */}
         <Text style={styles.footer}>PCI-compliant · Stripe-secured</Text>
       </View>
     </KeyboardAvoidingView>
@@ -85,7 +115,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
-
   card: {
     backgroundColor: '#050814',
     borderRadius: 22,
@@ -93,7 +122,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1f2937',
   },
-
   logo: {
     fontSize: 32,
     fontWeight: '700',
@@ -101,11 +129,7 @@ const styles = StyleSheet.create({
     color: 'white',
     letterSpacing: 1,
   },
-
-  logoGold: {
-    color: GOLD,
-  },
-
+  logoGold: {color: GOLD},
   subtitle: {
     color: '#9ca3af',
     textAlign: 'center',
@@ -113,17 +137,8 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     fontSize: 13,
   },
-
-  field: {
-    marginBottom: 18,
-  },
-
-  label: {
-    color: '#9ca3af',
-    fontSize: 12,
-    marginBottom: 6,
-  },
-
+  field: {marginBottom: 18},
+  label: {color: '#9ca3af', fontSize: 12, marginBottom: 6},
   input: {
     backgroundColor: '#020617',
     borderWidth: 1,
@@ -134,12 +149,7 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 15,
   },
-
-  passwordRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
+  passwordRow: {flexDirection: 'row', alignItems: 'center'},
   eyeBtn: {
     marginLeft: 10,
     paddingHorizontal: 10,
@@ -149,19 +159,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#374151',
   },
-
-  eyeIcon: {
-    fontSize: 18,
-    color: GOLD_SOFT,
-  },
-
+  eyeIcon: {fontSize: 18, color: GOLD_SOFT},
   loginBtn: {
     backgroundColor: GOLD,
     borderRadius: 16,
     paddingVertical: 15,
     marginTop: 10,
   },
-
   loginText: {
     color: '#020617',
     textAlign: 'center',
@@ -169,11 +173,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-
-  footer: {
-    color: '#6b7280',
-    textAlign: 'center',
-    fontSize: 11,
-    marginTop: 20,
-  },
+  footer: {color: '#6b7280', textAlign: 'center', fontSize: 11, marginTop: 20},
 });

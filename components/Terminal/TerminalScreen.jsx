@@ -1,5 +1,3 @@
-// components/Terminal/TerminalScreen.js
-
 import React, {useEffect, useRef, useState} from 'react';
 import {
   View,
@@ -17,7 +15,6 @@ import {
 } from '@stripe/stripe-terminal-react-native';
 
 import PaymentTerminal from '../PaymentTerminal';
-import terminalStyles from './terminal.styles';
 
 /**
  * CONFIG
@@ -26,15 +23,11 @@ const USE_SIMULATED_READER = __DEV__;
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
 export default function TerminalScreen({
-  styles, // global app styles
   paymentNote,
   setPaymentNote,
   onLogout,
   requestLocationPermissionIfNeeded,
 }) {
-  // 🔑 MERGE STYLES (THIS WAS THE MISSING PIECE)
-  const s = {...styles, ...terminalStyles};
-
   const {
     initialize,
     discoverReaders,
@@ -74,7 +67,7 @@ export default function TerminalScreen({
         },
         darkMode: DarkMode.DARK,
         colors: {
-          primary: '#facc15', // AG gold
+          primary: '#facc15',
           error: '#ef4444',
         },
       });
@@ -169,29 +162,63 @@ export default function TerminalScreen({
 
   // ---------------- UI ----------------
   return (
-    <ScrollView style={s.screen} contentContainerStyle={s.screenContent}>
+    <ScrollView
+      style={{flex: 1, backgroundColor: '#000'}}
+      contentContainerStyle={{padding: 16, paddingBottom: 40}}>
       {/* Header */}
-      <View style={s.headerRow}>
-        <Text style={s.appTitle}>AGPay · Tap to Pay</Text>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 6,
+        }}>
+        <Text style={{color: '#fff', fontSize: 20, fontWeight: '800'}}>
+          AGPay · Tap to Pay
+        </Text>
 
-        <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
-          <Text style={s.logoutIcon}>⎋</Text>
+        <TouchableOpacity
+          onPress={onLogout}
+          style={{
+            padding: 8,
+            borderRadius: 20,
+            backgroundColor: '#020617',
+            borderWidth: 1,
+            borderColor: '#3f3f46',
+          }}>
+          <Text style={{color: '#facc15', fontSize: 18, fontWeight: '700'}}>
+            ⎋
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <Text style={s.appSubtitle}>Quick, simple in-person payments</Text>
+      <Text style={{color: '#9ca3af', marginBottom: 12}}>
+        Quick, simple in-person payments
+      </Text>
 
       {/* Reader Status */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Reader status</Text>
+      <View
+        style={{
+          backgroundColor: '#0b1220',
+          borderWidth: 1,
+          borderColor: '#1f2937',
+          borderRadius: 16,
+          padding: 14,
+          marginBottom: 14,
+        }}>
+        <Text style={{color: '#fff', fontSize: 16, fontWeight: '800'}}>
+          Reader status
+        </Text>
 
-        <Text style={s.statusRow}>
+        <Text style={{color: '#d1d5db', marginTop: 10}}>
           SDK: {initialized ? 'Ready' : 'Initializing'}
         </Text>
 
-        <Text style={s.statusRow}>Tap to Pay: {supportLabel}</Text>
+        <Text style={{color: '#d1d5db', marginTop: 6}}>
+          Tap to Pay: {supportLabel}
+        </Text>
 
-        <Text style={s.statusRow}>
+        <Text style={{color: '#d1d5db', marginTop: 6}}>
           Reader:{' '}
           {connectedReader
             ? connectedReader.label || 'Connected'
@@ -199,37 +226,81 @@ export default function TerminalScreen({
         </Text>
 
         <TouchableOpacity
-          style={[
-            s.primaryBtn,
-            (connecting || !initialized) && s.primaryBtnDisabled,
-          ]}
+          style={{
+            backgroundColor: connecting || !initialized ? '#374151' : '#facc15',
+            paddingVertical: 14,
+            borderRadius: 12,
+            marginTop: 12,
+          }}
           onPress={handleConnectTapToPay}
           disabled={connecting || !initialized}>
-          <Text style={s.primaryBtnText}>
+          <Text
+            style={{
+              color: connecting || !initialized ? '#9ca3af' : '#020617',
+              fontSize: 15,
+              fontWeight: '800',
+              textAlign: 'center',
+            }}>
             {connecting ? 'Connecting…' : 'Connect Tap to Pay'}
           </Text>
         </TouchableOpacity>
 
         {connectedReader && (
-          <TouchableOpacity style={s.secondaryBtn} onPress={handleDisconnect}>
-            <Text style={s.secondaryBtnText}>Disconnect</Text>
+          <TouchableOpacity
+            style={{
+              marginTop: 10,
+              paddingVertical: 12,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: '#ef4444',
+            }}
+            onPress={handleDisconnect}>
+            <Text
+              style={{
+                color: '#ef4444',
+                fontSize: 14,
+                fontWeight: '700',
+                textAlign: 'center',
+              }}>
+              Disconnect
+            </Text>
           </TouchableOpacity>
         )}
       </View>
 
       {/* Payment */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Payment details</Text>
+      <View
+        style={{
+          backgroundColor: '#0b1220',
+          borderWidth: 1,
+          borderColor: '#1f2937',
+          borderRadius: 16,
+          padding: 14,
+        }}>
+        <Text style={{color: '#fff', fontSize: 16, fontWeight: '800'}}>
+          Payment details
+        </Text>
 
         <TextInput
-          style={s.noteInput}
+          style={{
+            marginTop: 10,
+            borderWidth: 1,
+            borderColor: '#374151',
+            borderRadius: 12,
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+            color: '#fff',
+            backgroundColor: '#020617',
+          }}
           placeholder="e.g. Chicken over rice + soda"
           placeholderTextColor="#9ca3af"
           value={paymentNote}
           onChangeText={setPaymentNote}
         />
 
-        <PaymentTerminal note={paymentNote} defaultAmount={20} />
+        {/* NOTE: PaymentTerminal has its own styles and <Button>, so it may still look different.
+           If you want it to match, we’ll update PaymentTerminal next. */}
+        <PaymentTerminal defaultAmount={20} />
       </View>
     </ScrollView>
   );
