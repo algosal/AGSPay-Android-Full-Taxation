@@ -6,6 +6,8 @@ import {
   TextInput,
   ScrollView,
   TouchableOpacity,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 
 import {
@@ -22,11 +24,34 @@ import PaymentTerminal from '../PaymentTerminal';
 const USE_SIMULATED_READER = __DEV__;
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
+// Location permission (kept here so this screen is self-contained)
+async function requestLocationPermissionIfNeeded() {
+  if (Platform.OS !== 'android') return true;
+
+  const granted = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    {
+      title: 'Location Permission',
+      message: 'AGPay uses location to enable Tap to Pay.',
+      buttonPositive: 'OK',
+    },
+  );
+
+  if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+    Alert.alert(
+      'Permission required',
+      'Location permission is required for Tap to Pay.',
+    );
+    return false;
+  }
+
+  return true;
+}
+
 export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
   onLogout,
-  requestLocationPermissionIfNeeded,
 }) {
   const {
     initialize,
@@ -48,6 +73,12 @@ export default function TerminalScreen({
   const [tapToPaySupported, setTapToPaySupported] = useState(null);
 
   const latestReadersRef = useRef([]);
+
+  useEffect(() => {
+    console.log(
+      '✅ RUNNING TerminalScreen from components/Terminal/TerminalScreen.js',
+    );
+  }, []);
 
   // ---------------- INIT ----------------
   useEffect(() => {
@@ -298,9 +329,19 @@ export default function TerminalScreen({
           onChangeText={setPaymentNote}
         />
 
-        {/* NOTE: PaymentTerminal has its own styles and <Button>, so it may still look different.
-           If you want it to match, we’ll update PaymentTerminal next. */}
-        <PaymentTerminal defaultAmount={20} />
+        <PaymentTerminal
+          defaultAmount={20}
+          theme={{
+            primary: '#facc15',
+            primaryText: '#020617',
+            text: '#ffffff',
+            subtext: '#d1d5db',
+            muted: '#9ca3af',
+            border: '#374151',
+            inputBg: '#020617',
+            danger: '#ef4444',
+          }}
+        />
       </View>
     </ScrollView>
   );
