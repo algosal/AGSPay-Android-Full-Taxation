@@ -1,12 +1,17 @@
 export const AGPAY_CONFIG = {
   currency: 'usd',
-
-  // Tax is 8.875% by default (NYC example). Change as needed.
   taxRate: 0.08875,
-
-  // MVP service fee: fixed 5 cents
-  serviceFeeCents: 5,
-
-  // Optional: round tax to nearest cent (recommended)
   roundToCents: true,
+
+  // Stripe baseline (pass-through)
+  stripeFeeRate: 0.027,
+  stripeFeeFixedCents: 5,
+
+  // AGPay service fee (smooth ramp: 5¢ → $1.00 at $100, then cap)
+  agFeeMinCents: 5,
+  // agFeeMaxCents: 100,
+  // agFeeSlopeRate: 0.0095,
+
+  agFeeMaxCents: 50,
+  agFeeSlopeRate: 0.0045, // (50 - 5) / 10000
 };

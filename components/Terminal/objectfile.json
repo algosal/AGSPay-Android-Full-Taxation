@@ -1,0 +1,96 @@
+
+ (NOBRIDGE) LOG  ================ AGPAY CHARGE START ================
+ (NOBRIDGE) LOG  CHARGE INPUT: {
+  "amountCents": 1094,
+  "amountLabel": "$10.94",
+  "currency": "usd",
+  "debugMeta": {
+    "subtotalInput": "10.00",
+    "subtotalCents": 1000,
+    "taxRate": 0.08875,
+    "taxCents": 89,
+    "serviceFeeCents": 5,
+    "note": ""
+  }
+}
+ (NOBRIDGE) LOG  Create-intent payload: {
+  "amount": 1094,
+  "currency": "usd"
+}
+ (NOBRIDGE) LOG  Create-intent HTTP status: 200
+ (NOBRIDGE) LOG  Create-intent raw response JSON: {
+  "statusCode": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "OPTIONS,POST"
+  },
+  "body": "{\"client_secret\": \"pi_3SkQgtPFfyaGFY9T1eXyrhht_secret_Ou6Hxw8LnQpmQx7I2kHJasEzD\"}"
+}
+ (NOBRIDGE) LOG  Create-intent parsed: {
+  "statusCode": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "OPTIONS,POST"
+  },
+  "body": "{\"client_secret\": \"pi_3SkQgtPFfyaGFY9T1eXyrhht_secret_Ou6Hxw8LnQpmQx7I2kHJasEzD\"}"
+}
+ (NOBRIDGE) LOG  Resolved clientSecret: pi_3SkQgtPFfyaGFY9T1eXyrhht_secret_Ou6Hxw8LnQpmQx7I2kHJasEzD
+ (NOBRIDGE) LOG  retrievePaymentIntent: {
+  "error": null,
+  "paymentIntent": {
+    "id": "pi_3SkQgtPFfyaGFY9T1eXyrhht",
+    "status": "requiresPaymentMethod",
+    "amount": 1094,
+    "currency": "usd",
+    "created": "1767192479000",
+    "paymentMethodId": null,
+    "captureMethod": "automatic",
+    "sdkUuid": "858d4f53-c449-48f6-bf15-3da00aaa5f0b",
+    "charge": null
+  }
+}
+ (NOBRIDGE) LOG  [Stripe terminal]: didChangePaymentStatus waitingForInput
+ (NOBRIDGE) LOG  [Stripe terminal]: didChangeOfflineStatus {"reader": {}, "sdk": {"networkStatus": "unknown", "offlinePaymentAmountsByCurrency": {}, "offlinePaymentsCount": 0}}
+ (NOBRIDGE) LOG  [Stripe terminal]: didChangeOfflineStatus {"reader": {}, "sdk": {"networkStatus": "online", "offlinePaymentAmountsByCurrency": {}, "offlinePaymentsCount": 0}}
+ (NOBRIDGE) LOG  collectPaymentMethod: {
+  "error": null,
+  "paymentIntent": {
+    "id": "pi_3SkQgtPFfyaGFY9T1eXyrhht",
+    "status": "requiresConfirmation",
+    "amount": 1094,
+    "currency": "usd",
+    "created": "1767192479000",
+    "paymentMethodId": null,
+    "captureMethod": "automatic",
+    "sdkUuid": "858d4f53-c449-48f6-bf15-3da00aaa5f0b",
+    "charge": null
+  }
+}
+ (NOBRIDGE) LOG  [Stripe terminal]: didChangePaymentStatus processing
+ (NOBRIDGE) LOG  [Stripe terminal]: didChangePaymentStatus ready
+ (NOBRIDGE) LOG  confirmPaymentIntent: {
+  "error": null,
+  "paymentIntent": {
+    "id": "pi_3SkQgtPFfyaGFY9T1eXyrhht",
+    "status": "succeeded",
+    "amount": 1094,
+    "currency": "usd",
+    "created": "1767192479000",
+    "paymentMethodId": "pm_1SkQgzPFfyaGFY9TJh8gFncR",
+    "captureMethod": "automatic",
+    "sdkUuid": "858d4f53-c449-48f6-bf15-3da00aaa5f0b",
+    "charge": {
+      "id": "ch_3SkQgtPFfyaGFY9T1JYCqNVv",
+      "status": "succeeded",
+      "amount": 1094,
+      "currency": "usd",
+      "outcome": null
+    }
+  }
+}
+ (NOBRIDGE) LOG  ================ AGPAY CHARGE END ==================
+  

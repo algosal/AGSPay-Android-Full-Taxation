@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -17,14 +17,12 @@ import {
 } from '@stripe/stripe-terminal-react-native';
 
 import PaymentTerminal from '../PaymentTerminal';
+import terminalStyles, {AG} from './terminal.styles';
+import {AGPAY_CONFIG} from './agpay.config';
 
-/**
- * CONFIG
- */
 const USE_SIMULATED_READER = __DEV__;
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
-// Location permission (kept here so this screen is self-contained)
 async function requestLocationPermissionIfNeeded() {
   if (Platform.OS !== 'android') return true;
 
@@ -44,15 +42,23 @@ async function requestLocationPermissionIfNeeded() {
     );
     return false;
   }
-
   return true;
 }
+
+function parseMoney(text) {
+  const n = parseFloat(String(text || '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+const centsFromDollars = d => Math.round(d * 100);
+const dollarsFromCents = c => (c / 100).toFixed(2);
 
 export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
   onLogout,
 }) {
+  const s = terminalStyles;
+
   const {
     initialize,
     discoverReaders,
@@ -63,32 +69,33 @@ export default function TerminalScreen({
     setTapToPayUxConfiguration,
     supportsReadersOfType,
   } = useStripeTerminal({
-    onUpdateDiscoveredReaders: readers => {
-      console.log('onUpdateDiscoveredReaders:', readers);
-    },
+    onUpdateDiscoveredReaders: readers =>
+      console.log('onUpdateDiscoveredReaders:', readers),
   });
 
   const [initialized, setInitialized] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [tapToPaySupported, setTapToPaySupported] = useState(null);
 
+  const [subtotalInput, setSubtotalInput] = useState('10.00');
+
   const latestReadersRef = useRef([]);
 
   useEffect(() => {
     console.log(
-      '✅ RUNNING TerminalScreen from components/Terminal/TerminalScreen.js',
+      '✅ RUNNING TerminalScreen:',
+      'components/Terminal/TerminalScreen.js',
     );
   }, []);
 
-  // ---------------- INIT ----------------
+  // Init
   useEffect(() => {
-    const init = async () => {
+    (async () => {
       const {error} = await initialize();
       if (error) {
         Alert.alert('Stripe Terminal', 'Failed to initialize Terminal');
         return;
       }
-
       setInitialized(true);
 
       await setTapToPayUxConfiguration({
@@ -97,36 +104,81 @@ export default function TerminalScreen({
           tapZonePosition: {xBias: 0.5, yBias: 0.3},
         },
         darkMode: DarkMode.DARK,
-        colors: {
-          primary: '#facc15',
-          error: '#ef4444',
-        },
+        colors: {primary: AG.gold, error: AG.danger},
       });
-    };
-
-    init();
+    })();
   }, [initialize, setTapToPayUxConfiguration]);
 
-  // ---------------- SUPPORT CHECK ----------------
+  // Support check
   useEffect(() => {
     if (!initialized) return;
-
-    supportsReadersOfType({
-      deviceType: 'tapToPay',
-      discoveryMethod: 'tapToPay',
-    })
+    supportsReadersOfType({deviceType: 'tapToPay', discoveryMethod: 'tapToPay'})
       .then(r => setTapToPaySupported(r?.supported ?? null))
       .catch(() => setTapToPaySupported(null));
   }, [initialized, supportsReadersOfType]);
 
   // Keep freshest readers
   useEffect(() => {
-    if (Array.isArray(discoveredReaders)) {
+    if (Array.isArray(discoveredReaders))
       latestReadersRef.current = discoveredReaders;
-    }
   }, [discoveredReaders]);
 
-  // ---------------- CONNECT ----------------
+  // Calc
+  const calc = useMemo(() => {
+    const subtotal = parseMoney(subtotalInput);
+    const subtotalCents = centsFromDollars(subtotal);
+
+    const taxRate = Number(AGPAY_CONFIG.taxRate || 0);
+
+    const stripeFeeRate = Number(AGPAY_CONFIG.stripeFeeRate || 0);
+    const stripeFeeFixedCents = Number(AGPAY_CONFIG.stripeFeeFixedCents || 0);
+
+    const agFeeMinCents = Number(AGPAY_CONFIG.agFeeMinCents ?? 0);
+    const agFeeMaxCents = Number(AGPAY_CONFIG.agFeeMaxCents ?? 0);
+    const agFeeSlopeRate = Number(AGPAY_CONFIG.agFeeSlopeRate ?? 0);
+
+    const taxCents = Math.round(subtotalCents * taxRate);
+
+    // Stripe baseline fee
+    const stripeFeeCents =
+      Math.round(subtotalCents * stripeFeeRate) + stripeFeeFixedCents;
+
+    // AGPay ramp fee (smooth, capped)
+    const agFeeBase = Math.round(
+      agFeeMinCents + subtotalCents * agFeeSlopeRate,
+    );
+    const agFeeCents = Math.min(
+      agFeeMaxCents,
+      Math.max(agFeeMinCents, agFeeBase),
+    );
+
+    // Total fee + total charge
+    const feeCents = stripeFeeCents + agFeeCents;
+    const totalCents = subtotalCents + taxCents + feeCents;
+
+    return {
+      subtotalCents,
+      taxRate,
+      taxCents,
+      stripeFeeCents,
+      agFeeCents,
+      feeCents,
+      totalCents,
+    };
+  }, [subtotalInput]);
+
+  useEffect(() => {
+    console.log('AGPay CALC:', {
+      subtotalInput,
+      subtotalCents: calc.subtotalCents,
+      taxRate: calc.taxRate,
+      taxCents: calc.taxCents,
+      serviceFeeCents: calc.feeCents,
+      totalCents: calc.totalCents,
+      totalDollars: dollarsFromCents(calc.totalCents),
+    });
+  }, [calc, subtotalInput]);
+
   const handleConnectTapToPay = async () => {
     if (!initialized) return;
 
@@ -161,26 +213,29 @@ export default function TerminalScreen({
     const locationIdToUse = USE_SIMULATED_READER
       ? reader.locationId
       : LIVE_LOCATION_ID;
-
     if (!locationIdToUse) {
       Alert.alert('Missing location ID');
       setConnecting(false);
       return;
     }
 
+    console.log('AGPay CONNECT:', {
+      simulated: USE_SIMULATED_READER,
+      reader,
+      locationIdToUse,
+    });
+
     const {error: connectErr} = await connectReader(
       {reader, locationId: locationIdToUse},
       'tapToPay',
     );
-
-    if (connectErr) {
-      Alert.alert('Connect error', connectErr.message);
-    }
+    if (connectErr) Alert.alert('Connect error', connectErr.message);
 
     setConnecting(false);
   };
 
   const handleDisconnect = async () => {
+    console.log('AGPay DISCONNECT requested');
     await disconnectReader();
   };
 
@@ -191,65 +246,74 @@ export default function TerminalScreen({
       ? '✅ Supported'
       : '❌ Not supported';
 
-  // ---------------- UI ----------------
-  return (
-    <ScrollView
-      style={{flex: 1, backgroundColor: '#000'}}
-      contentContainerStyle={{padding: 16, paddingBottom: 40}}>
-      {/* Header */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 6,
-        }}>
-        <Text style={{color: '#fff', fontSize: 20, fontWeight: '800'}}>
-          AGPay · Tap to Pay
-        </Text>
+  const totalLabel = `$${dollarsFromCents(calc.totalCents)}`;
+  const connectDisabled = connecting || !initialized;
 
-        <TouchableOpacity
-          onPress={onLogout}
-          style={{
-            padding: 8,
-            borderRadius: 20,
-            backgroundColor: '#020617',
-            borderWidth: 1,
-            borderColor: '#3f3f46',
-          }}>
-          <Text style={{color: '#facc15', fontSize: 18, fontWeight: '700'}}>
-            ⎋
-          </Text>
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={s.content}>
+      {/* Header */}
+      <View style={s.headerRow}>
+        <Text style={s.title}>
+          <Text style={{color: AG.gold}}>AG</Text>
+          <Text style={{color: AG.text}}>Pay · Tap to Pay</Text>
+        </Text>
+        <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
+          <Text style={s.logoutIcon}>⎋</Text>
         </TouchableOpacity>
       </View>
 
-      <Text style={{color: '#9ca3af', marginBottom: 12}}>
-        Quick, simple in-person payments
-      </Text>
+      <Text style={s.subtitle}>Quick, simple in-person payments</Text>
 
-      {/* Reader Status */}
-      <View
-        style={{
-          backgroundColor: '#0b1220',
-          borderWidth: 1,
-          borderColor: '#1f2937',
-          borderRadius: 16,
-          padding: 14,
-          marginBottom: 14,
-        }}>
-        <Text style={{color: '#fff', fontSize: 16, fontWeight: '800'}}>
-          Reader status
-        </Text>
+      {/* What to charge (top) */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>What to charge</Text>
 
-        <Text style={{color: '#d1d5db', marginTop: 10}}>
+        <View style={s.chargeRow}>
+          <Text style={s.dollar}>$</Text>
+          <TextInput
+            style={s.amountInput}
+            keyboardType="numeric"
+            value={subtotalInput}
+            onChangeText={setSubtotalInput}
+            placeholder="10.00"
+            placeholderTextColor={AG.muted}
+          />
+        </View>
+
+        <View style={s.dividerTop}>
+          <View style={s.row}>
+            <Text style={s.rowLabel}>Subtotal</Text>
+            <Text style={s.rowValue}>
+              ${dollarsFromCents(calc.subtotalCents)}
+            </Text>
+          </View>
+          <View style={s.row}>
+            <Text style={s.rowLabel}>
+              Tax ({(calc.taxRate * 100).toFixed(3)}%)
+            </Text>
+            <Text style={s.rowValue}>${dollarsFromCents(calc.taxCents)}</Text>
+          </View>
+          <View style={s.row}>
+            <Text style={s.rowLabel}>AGPay fee</Text>
+            <Text style={s.rowValue}>${dollarsFromCents(calc.feeCents)}</Text>
+          </View>
+
+          <View style={[s.row, {marginTop: 10}]}>
+            <Text style={[s.rowLabel, {fontWeight: '900'}]}>Total</Text>
+            <Text style={s.rowValueGold}>{totalLabel}</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Reader status */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Reader status</Text>
+
+        <Text style={s.statusText}>
           SDK: {initialized ? 'Ready' : 'Initializing'}
         </Text>
-
-        <Text style={{color: '#d1d5db', marginTop: 6}}>
-          Tap to Pay: {supportLabel}
-        </Text>
-
-        <Text style={{color: '#d1d5db', marginTop: 6}}>
+        <Text style={s.statusText}>Tap to Pay: {supportLabel}</Text>
+        <Text style={s.statusText}>
           Reader:{' '}
           {connectedReader
             ? connectedReader.label || 'Connected'
@@ -257,89 +321,60 @@ export default function TerminalScreen({
         </Text>
 
         <TouchableOpacity
-          style={{
-            backgroundColor: connecting || !initialized ? '#374151' : '#facc15',
-            paddingVertical: 14,
-            borderRadius: 12,
-            marginTop: 12,
-          }}
+          style={[s.primaryBtn, connectDisabled && s.primaryBtnDisabled]}
           onPress={handleConnectTapToPay}
-          disabled={connecting || !initialized}>
+          disabled={connectDisabled}>
           <Text
-            style={{
-              color: connecting || !initialized ? '#9ca3af' : '#020617',
-              fontSize: 15,
-              fontWeight: '800',
-              textAlign: 'center',
-            }}>
+            style={[
+              s.primaryBtnText,
+              connectDisabled && s.primaryBtnTextDisabled,
+            ]}>
             {connecting ? 'Connecting…' : 'Connect Tap to Pay'}
           </Text>
         </TouchableOpacity>
 
         {connectedReader && (
-          <TouchableOpacity
-            style={{
-              marginTop: 10,
-              paddingVertical: 12,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: '#ef4444',
-            }}
-            onPress={handleDisconnect}>
-            <Text
-              style={{
-                color: '#ef4444',
-                fontSize: 14,
-                fontWeight: '700',
-                textAlign: 'center',
-              }}>
-              Disconnect
-            </Text>
+          <TouchableOpacity style={s.secondaryBtn} onPress={handleDisconnect}>
+            <Text style={s.secondaryBtnText}>Disconnect</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Payment */}
-      <View
-        style={{
-          backgroundColor: '#0b1220',
-          borderWidth: 1,
-          borderColor: '#1f2937',
-          borderRadius: 16,
-          padding: 14,
-        }}>
-        <Text style={{color: '#fff', fontSize: 16, fontWeight: '800'}}>
-          Payment details
-        </Text>
+      {/* Notes + Charge */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Notes</Text>
 
         <TextInput
-          style={{
-            marginTop: 10,
-            borderWidth: 1,
-            borderColor: '#374151',
-            borderRadius: 12,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-            color: '#fff',
-            backgroundColor: '#020617',
-          }}
+          style={s.noteInput}
           placeholder="e.g. Chicken over rice + soda"
-          placeholderTextColor="#9ca3af"
+          placeholderTextColor={AG.muted}
           value={paymentNote}
           onChangeText={setPaymentNote}
         />
 
         <PaymentTerminal
-          defaultAmount={20}
+          amountCents={calc.totalCents}
+          amountLabel={totalLabel}
+          currency={AGPAY_CONFIG.currency || 'usd'}
+          debugMeta={{
+            subtotalInput,
+            subtotalCents: calc.subtotalCents,
+            taxRate: calc.taxRate,
+            taxCents: calc.taxCents,
+            serviceFeeCents: calc.feeCents,
+            note: paymentNote,
+          }}
           theme={{
-            primary: '#facc15',
-            primaryText: '#020617',
-            text: '#ffffff',
-            subtext: '#d1d5db',
-            muted: '#9ca3af',
-            border: '#374151',
-            inputBg: '#020617',
-            danger: '#ef4444',
+            primary: AG.gold,
+            primaryText: AG.goldText,
+            text: AG.text,
+            subtext: AG.subtext,
+            muted: AG.muted,
+            border: AG.border,
+            inputBg: AG.inputBg,
+            danger: AG.danger,
+            disabledBg: AG.disabledBg,
+            disabledText: AG.disabledText,
           }}
         />
       </View>

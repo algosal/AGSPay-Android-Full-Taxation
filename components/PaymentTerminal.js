@@ -3,7 +3,6 @@ import React, {useMemo, useState} from 'react';
 import {
   View,
   Text,
-  TextInput,
   Alert,
   StyleSheet,
   ActivityIndicator,
@@ -11,11 +10,58 @@ import {
 } from 'react-native';
 import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
 
+// -----------------------------
+// LOG HELPERS (READABLE OUTPUT)
+// -----------------------------
+function pretty(label, obj) {
+  try {
+    console.log(label, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.log(label, obj);
+  }
+}
+
+// Stripe objects are large + deeply nested; this keeps logs readable.
+function summarizePI(pi) {
+  if (!pi) return null;
+
+  const charge0 = Array.isArray(pi.charges) ? pi.charges[0] : null;
+
+  return {
+    id: pi.id,
+    status: pi.status,
+    amount: pi.amount,
+    currency: pi.currency,
+    created: pi.created,
+    paymentMethodId: pi.paymentMethodId,
+    captureMethod: pi.captureMethod,
+    sdkUuid: pi.sdkUuid,
+    charge: charge0
+      ? {
+          id: charge0.id,
+          status: charge0.status,
+          amount: charge0.amount,
+          currency: charge0.currency,
+          paid: charge0.paid,
+          outcome: charge0.outcome
+            ? {
+                networkStatus: charge0.outcome.network_status,
+                type: charge0.outcome.type,
+                riskLevel: charge0.outcome.risk_level,
+                sellerMessage: charge0.outcome.seller_message,
+              }
+            : null,
+        }
+      : null,
+  };
+}
+
 export default function PaymentTerminal({
-  defaultAmount = 10,
+  amountCents, // REQUIRED: total cents to charge
+  amountLabel, // e.g. "$10.94"
+  currency = 'usd',
   theme,
-  containerStyle,
-  titleStyle,
+  debugMeta, // arbitrary object to log with transaction
 }) {
   const {
     connectedReader,
@@ -24,24 +70,17 @@ export default function PaymentTerminal({
     confirmPaymentIntent,
   } = useStripeTerminal();
 
-  const [amountInput, setAmountInput] = useState(String(defaultAmount));
   const [loading, setLoading] = useState(false);
 
   const CREATE_INTENT_URL =
     'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
-  // Theme defaults (so this component is usable even without props)
   const t = useMemo(
     () => ({
-      text: theme?.text ?? '#f9fafb',
-      subtext: theme?.subtext ?? '#d1d5db',
-      muted: theme?.muted ?? '#9ca3af',
-      border: theme?.border ?? '#374151',
-      inputBg: theme?.inputBg ?? '#0b1220',
-      screenBg: theme?.screenBg ?? 'transparent',
       primary: theme?.primary ?? '#facc15',
-      primaryText: theme?.primaryText ?? '#111827',
-      danger: theme?.danger ?? '#ef4444',
+      primaryText: theme?.primaryText ?? '#020617',
+      text: theme?.text ?? '#ffffff',
+      muted: theme?.muted ?? '#9ca3af',
       disabledBg: theme?.disabledBg ?? '#374151',
       disabledText: theme?.disabledText ?? '#9ca3af',
     }),
@@ -56,61 +95,58 @@ export default function PaymentTerminal({
     if (typeof payload.body === 'string') {
       try {
         const inner = JSON.parse(payload.body);
-        if (inner?.client_secret) return inner.client_secret;
-        if (inner?.clientSecret) return inner.clientSecret;
+        return inner?.client_secret || inner?.clientSecret || null;
       } catch (e) {
-        console.log(
-          'resolveClientSecret: failed to parse payload.body JSON:',
-          e,
-        );
+        console.log('resolveClientSecret: parse error', e);
       }
     }
 
     if (payload.body && typeof payload.body === 'object') {
-      if (payload.body.client_secret) return payload.body.client_secret;
-      if (payload.body.clientSecret) return payload.body.clientSecret;
+      return payload.body.client_secret || payload.body.clientSecret || null;
     }
 
     return null;
   }
 
   const handleCharge = async () => {
-    let parsed = null;
-
     try {
       if (!connectedReader) {
-        Alert.alert(
-          'No reader connected',
-          'Please connect Tap to Pay on this phone first.',
-        );
+        Alert.alert('No reader connected', 'Connect Tap to Pay first.');
         return;
       }
 
-      parsed = parseFloat(String(amountInput).replace(',', '.'));
-      if (Number.isNaN(parsed) || parsed <= 0) {
-        Alert.alert(
-          'Invalid amount',
-          'Please enter a valid amount greater than 0.',
-        );
+      if (!Number.isFinite(amountCents) || amountCents <= 0) {
+        Alert.alert('Invalid total', 'Total must be greater than $0.00');
         return;
       }
 
-      const amountInCents = Math.round(parsed * 100);
       setLoading(true);
+
+      console.log('================ AGPAY CHARGE START ================');
+      pretty('CHARGE INPUT:', {amountCents, amountLabel, currency, debugMeta});
+
+      // 1) Create PaymentIntent via backend
+      const createPayload = {amount: amountCents, currency};
+      pretty('Create-intent payload:', createPayload);
 
       const resp = await fetch(CREATE_INTENT_URL, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({amount: amountInCents, currency: 'usd'}),
+        body: JSON.stringify(createPayload),
       });
 
       const rawText = await resp.text();
+      console.log('Create-intent HTTP status:', resp.status);
+
+      // Print raw response in readable form (if JSON)
+      try {
+        pretty('Create-intent raw response JSON:', JSON.parse(rawText));
+      } catch {
+        console.log('Create-intent raw response text:', rawText);
+      }
 
       if (!resp.ok) {
-        Alert.alert(
-          'Create PaymentIntent failed',
-          `HTTP ${resp.status}. Check logs.`,
-        );
+        Alert.alert('Create failed', `HTTP ${resp.status}. Check logs.`);
         return;
       }
 
@@ -118,51 +154,76 @@ export default function PaymentTerminal({
       try {
         piData = rawText ? JSON.parse(rawText) : null;
       } catch (e) {
-        console.log('Failed to parse create-intent JSON:', e);
+        console.log('Create-intent JSON parse error:', e);
       }
 
+      // Also show the parsed top-level structure
+      pretty('Create-intent parsed:', piData);
+
       const clientSecret = resolveClientSecretFromApi(piData);
+      console.log('Resolved clientSecret:', clientSecret);
+
       if (!clientSecret) {
         Alert.alert('Error', 'Backend did not return client_secret.');
         return;
       }
 
+      // 2) Retrieve PI on device
       const {paymentIntent: retrievedPI, error: retrieveError} =
         await retrievePaymentIntent(clientSecret);
+
+      pretty('retrievePaymentIntent:', {
+        error: retrieveError
+          ? {code: retrieveError.code, message: retrieveError.message}
+          : null,
+        paymentIntent: summarizePI(retrievedPI),
+      });
 
       if (retrieveError) {
         Alert.alert(
           'Retrieve failed',
-          retrieveError.message || 'Failed to retrieve PI.',
+          retrieveError.message || 'Retrieve failed',
         );
         return;
       }
 
+      // 3) Collect payment method
       Alert.alert('Ready', 'Tap a card on the phone to collect payment.');
 
       const {paymentIntent: collectedPI, error: collectError} =
         await collectPaymentMethod({paymentIntent: retrievedPI});
 
+      pretty('collectPaymentMethod:', {
+        error: collectError
+          ? {code: collectError.code, message: collectError.message}
+          : null,
+        paymentIntent: summarizePI(collectedPI),
+      });
+
       if (collectError) {
-        Alert.alert(
-          'Collect failed',
-          collectError.message || 'Failed to collect.',
-        );
+        Alert.alert('Collect failed', collectError.message || 'Collect failed');
         return;
       }
 
+      // 4) Confirm PI
       const {paymentIntent: confirmedPI, error: confirmError} =
         await confirmPaymentIntent({paymentIntent: collectedPI});
 
+      pretty('confirmPaymentIntent:', {
+        error: confirmError
+          ? {code: confirmError.code, message: confirmError.message}
+          : null,
+        paymentIntent: summarizePI(confirmedPI),
+      });
+
+      console.log('================ AGPAY CHARGE END ==================');
+
       if (confirmError) {
-        Alert.alert(
-          'Confirm failed',
-          confirmError.message || 'Failed to confirm.',
-        );
+        Alert.alert('Confirm failed', confirmError.message || 'Confirm failed');
         return;
       }
 
-      Alert.alert('Success', `Payment of $${parsed.toFixed(2)} completed.`);
+      Alert.alert('Success', `Payment completed: ${amountLabel || ''}`);
     } catch (err) {
       console.log('handleCharge unexpected error:', err);
       Alert.alert('Error', String(err?.message || err));
@@ -174,63 +235,34 @@ export default function PaymentTerminal({
   const disabled = !connectedReader || loading;
 
   return (
-    <View
-      style={[styles.container, {backgroundColor: t.screenBg}, containerStyle]}>
-      <Text style={[styles.title, {color: t.text}, titleStyle]}>
-        Charge Customer
+    <View style={styles.container}>
+      <Text style={[styles.total, {color: t.text}]}>
+        Total: <Text style={{color: t.primary}}>{amountLabel || '$0.00'}</Text>
       </Text>
 
-      <Text style={[styles.label, {color: t.subtext}]}>Connected reader:</Text>
-      <Text style={[styles.value, {color: t.text}]}>
-        {connectedReader
-          ? connectedReader.label || 'Tap to Pay (Phone)'
-          : 'None'}
-      </Text>
-
-      <Text style={[styles.label, {marginTop: 16, color: t.subtext}]}>
-        Amount (USD):
-      </Text>
-
-      <View style={styles.row}>
-        <Text style={[styles.dollar, {color: t.text}]}>$</Text>
-        <TextInput
-          style={[
-            styles.input,
-            {borderColor: t.border, backgroundColor: t.inputBg, color: t.text},
-          ]}
-          keyboardType="numeric"
-          value={amountInput}
-          onChangeText={setAmountInput}
-          placeholder="10"
-          placeholderTextColor={t.muted}
-        />
-      </View>
-
-      <View style={{marginTop: 16}}>
-        <TouchableOpacity
-          onPress={handleCharge}
-          disabled={disabled}
-          style={[
-            styles.primaryBtn,
-            {backgroundColor: disabled ? t.disabledBg : t.primary},
-          ]}>
-          {loading ? (
-            <ActivityIndicator size="small" />
-          ) : (
-            <Text
-              style={[
-                styles.primaryBtnText,
-                {color: disabled ? t.disabledText : t.primaryText},
-              ]}>
-              {`Charge $${amountInput || defaultAmount}`}
-            </Text>
-          )}
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity
+        onPress={handleCharge}
+        disabled={disabled}
+        style={[
+          styles.btn,
+          {backgroundColor: disabled ? t.disabledBg : t.primary},
+        ]}>
+        {loading ? (
+          <ActivityIndicator size="small" />
+        ) : (
+          <Text
+            style={[
+              styles.btnText,
+              {color: disabled ? t.disabledText : t.primaryText},
+            ]}>
+            Charge
+          </Text>
+        )}
+      </TouchableOpacity>
 
       {!connectedReader && (
         <Text style={[styles.helper, {color: t.muted}]}>
-          Connect Tap to Pay on this phone before charging.
+          Connect Tap to Pay before charging.
         </Text>
       )}
     </View>
@@ -239,53 +271,26 @@ export default function PaymentTerminal({
 
 const styles = StyleSheet.create({
   container: {
-    marginTop: 16,
-    width: '100%',
+    marginTop: 12,
   },
-  title: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 10,
+  total: {
     textAlign: 'center',
-  },
-  label: {
-    fontSize: 13,
-    opacity: 0.9,
-  },
-  value: {
     fontSize: 14,
-    fontWeight: '600',
-    marginTop: 2,
+    fontWeight: '900',
+    marginBottom: 10,
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  dollar: {
-    fontSize: 20,
-    marginRight: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 18,
-    minWidth: 140,
-  },
-  primaryBtn: {
+  btn: {
     borderRadius: 12,
-    paddingVertical: 12,
+    paddingVertical: 10, // reduced height
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
+  btnText: {
+    fontSize: 14,
+    fontWeight: '900',
   },
   helper: {
-    marginTop: 10,
+    marginTop: 8,
     fontSize: 12,
     textAlign: 'center',
   },
