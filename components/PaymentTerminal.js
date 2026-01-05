@@ -57,6 +57,28 @@ function summarizePI(pi) {
   };
 }
 
+// Safely stringify possibly-circular objects.
+// For Stripe PI objects, JSON.stringify should normally work, but MVP-safe is good.
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    try {
+      const seen = new WeakSet();
+      return JSON.stringify(value, (key, val) => {
+        if (typeof val === 'object' && val !== null) {
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        return val;
+      });
+    } catch (e2) {
+      console.log('safeStringify failed:', e2);
+      return null;
+    }
+  }
+}
+
 // -----------------------------
 // KEYCHAIN HELPERS
 // -----------------------------
@@ -254,8 +276,8 @@ export default function PaymentTerminal({
       const createPayload = {
         amount: amountCents,
         currency,
-        description, // <-- NEW (stored in Stripe PaymentIntent)
-        metadata, // <-- NEW (also stored in Stripe PaymentIntent)
+        description, // stored in Stripe PaymentIntent
+        metadata, // stored in Stripe PaymentIntent
       };
 
       pretty('Create-intent payload:', createPayload);
@@ -365,6 +387,9 @@ export default function PaymentTerminal({
           confirmedPI?.charge?.id ||
           null;
 
+        // NEW: store raw Stripe returned object as JSON string (MVP).
+        const stripeReturnedObject = safeStringify(confirmedPI);
+
         const finalTx = {
           // Selection context
           ownerId: selection?.ownerId || null,
@@ -382,6 +407,9 @@ export default function PaymentTerminal({
             paymentMethodId: confirmedPI?.paymentMethodId || null,
             chargeId,
           },
+
+          // NEW FIELD (MVP): raw Stripe object returned from confirmPaymentIntent
+          stripeReturnedObject: stripeReturnedObject || null,
 
           // Calculation + UI metadata
           amountLabel: amountLabel || null,
@@ -406,6 +434,9 @@ export default function PaymentTerminal({
           amount: finalTx?.stripe?.amount || null,
           currency: finalTx?.stripe?.currency || null,
           clientEpochMs: finalTx?.clientEpochMs || Date.now(),
+
+          // Optional but useful for MVP debugging
+          stripeReturnedObject: finalTx?.stripeReturnedObject || null,
         });
       } catch (e) {
         console.log('Final TX print/save error:', e);
