@@ -16,6 +16,8 @@ import {
   DarkMode,
 } from '@stripe/stripe-terminal-react-native';
 
+import * as Keychain from 'react-native-keychain';
+
 import PaymentTerminal from '../PaymentTerminal';
 import terminalStyles, {AG} from './terminal.styles';
 import {AGPAY_CONFIG} from './agpay.config';
@@ -52,10 +54,22 @@ function parseMoney(text) {
 const centsFromDollars = d => Math.round(d * 100);
 const dollarsFromCents = c => (c / 100).toFixed(2);
 
+async function clearAgpaySelection() {
+  try {
+    const res = await Keychain.resetInternetCredentials({
+      server: 'agpaySelection',
+    });
+    console.log('ChangeStore resetInternetCredentials(agpaySelection) =>', res);
+  } catch (e) {
+    console.log('clearAgpaySelection error:', e);
+  }
+}
+
 export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
   onLogout,
+  onChangeStoreRequested, // OPTIONAL: App.js can pass this later
 }) {
   const s = terminalStyles;
 
@@ -239,6 +253,33 @@ export default function TerminalScreen({
     await disconnectReader();
   };
 
+  const handleChangeStore = async () => {
+    Alert.alert(
+      'Change store',
+      'This will require selecting corporate + store again.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: async () => {
+            await clearAgpaySelection();
+
+            // If App.js supplies this callback, we can force a clean route immediately.
+            // Otherwise App.js will still route correctly on next boot/login cycle.
+            if (typeof onChangeStoreRequested === 'function') {
+              onChangeStoreRequested();
+            } else {
+              console.log(
+                'ChangeStore: onChangeStoreRequested not provided; selection cleared.',
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const supportLabel =
     tapToPaySupported === null
       ? 'Unknown'
@@ -257,9 +298,16 @@ export default function TerminalScreen({
           <Text style={{color: AG.gold}}>AG</Text>
           <Text style={{color: AG.text}}>Pay · Tap to Pay</Text>
         </Text>
-        <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
-          <Text style={s.logoutIcon}>⎋</Text>
-        </TouchableOpacity>
+
+        <View style={{flexDirection: 'row', gap: 10}}>
+          <TouchableOpacity onPress={handleChangeStore} style={s.logoutBtn}>
+            <Text style={s.logoutIcon}>🏪</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
+            <Text style={s.logoutIcon}>⎋</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <Text style={s.subtitle}>Quick, simple in-person payments</Text>

@@ -11,6 +11,72 @@ import {
 } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 
+// -----------------------------------------------------------------------------
+// LOGIN API (Vendio Admin MVP)
+// -----------------------------------------------------------------------------
+const LOGIN_URL =
+  'https://qbww95j856.execute-api.us-east-2.amazonaws.com/s1/login';
+
+// If your backend wraps responses like { body: "..." }, this will normalize it.
+function safeJsonParse(text) {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function normalizeLoginResponse(raw) {
+  if (!raw) return null;
+
+  // If API Gateway returns { body: "stringified json" }
+  if (typeof raw.body === 'string') {
+    const inner = safeJsonParse(raw.body);
+    return inner || raw;
+  }
+
+  // If API Gateway returns { body: { ... } }
+  if (raw.body && typeof raw.body === 'object') {
+    return raw.body;
+  }
+
+  return raw;
+}
+
+function resolveToken(payload) {
+  if (!payload) return null;
+  return (
+    payload.token ||
+    payload.jwt ||
+    payload.access_token ||
+    payload.accessToken ||
+    payload.idToken ||
+    null
+  );
+}
+
+function resolveOwnerId(payload) {
+  if (!payload) return null;
+
+  // 1) Top-level (if backend ever adds it later)
+  const direct =
+    payload.ownerId ||
+    payload.ownerID ||
+    payload.userId ||
+    payload.userID ||
+    payload.sub ||
+    null;
+
+  if (direct) return direct;
+
+  // 2) Nested profile object (your current response)
+  if (payload.profile && typeof payload.profile === 'object') {
+    return payload.profile.userId || payload.profile.userID || null;
+  }
+
+  return null;
+}
+
 export default function Login({onLoginSuccess}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -19,26 +85,91 @@ export default function Login({onLoginSuccess}) {
 
   const handleContinue = async () => {
     try {
-      if (!email.trim() || !password) {
+      const cleanEmail = email.trim().toLowerCase();
+
+      if (!cleanEmail || !password) {
         Alert.alert('Missing info', 'Enter email and password.');
         return;
       }
 
       setSaving(true);
 
-      // Persist "session" (for now). Later you can store a real auth token here.
-      await Keychain.setGenericPassword(
-        email.trim().toLowerCase(),
-        'logged_in',
-        {
-          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
-        },
+      // 1) Call backend login (real auth)
+      console.log('LOGIN => requesting JWT:', {email: cleanEmail});
+
+      const resp = await fetch(LOGIN_URL, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: cleanEmail, password}),
+      });
+
+      const rawText = await resp.text();
+      console.log('LOGIN => HTTP status:', resp.status);
+
+      const rawJson = safeJsonParse(rawText);
+      if (rawJson) {
+        console.log('LOGIN => raw JSON:', JSON.stringify(rawJson, null, 2));
+      } else {
+        console.log('LOGIN => raw text:', rawText);
+      }
+
+      if (!resp.ok) {
+        Alert.alert('Login failed', `HTTP ${resp.status}. Check logs.`);
+        return;
+      }
+
+      const normalized = normalizeLoginResponse(rawJson || {});
+      console.log('LOGIN => normalized:', JSON.stringify(normalized, null, 2));
+
+      const token = resolveToken(normalized);
+      const ownerId = resolveOwnerId(normalized);
+
+      console.log('LOGIN => resolved token present:', !!token);
+      console.log('LOGIN => resolved ownerId:', ownerId);
+
+      if (!token) {
+        Alert.alert(
+          'Login error',
+          'No token returned from /login. Check logs.',
+        );
+        return;
+      }
+
+      if (!ownerId) {
+        Alert.alert(
+          'Login error',
+          'No ownerId returned from /login. Check logs so we can map the correct field name.',
+        );
+        return;
+      }
+
+      // 2) Preserve your existing authed gate EXACTLY (do not disturb)
+      await Keychain.setGenericPassword(cleanEmail, 'logged_in', {
+        accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
+      });
+
+      // 3) Store auth context separately (does not affect your existing Keychain usage)
+      const authSession = {
+        email: cleanEmail,
+        ownerId,
+        token,
+        // keep the full normalized payload for debugging/forward compatibility
+        profile: normalized,
+        savedAt: Date.now(),
+      };
+
+      await Keychain.setInternetCredentials(
+        'agpayAuth',
+        'auth',
+        JSON.stringify(authSession),
       );
+
+      console.log('LOGIN => Keychain saved: generic session + agpayAuth');
 
       onLoginSuccess();
     } catch (e) {
-      console.log('Login Keychain save error:', e);
-      Alert.alert('Error', 'Failed to save login session.');
+      console.log('Login error:', e);
+      Alert.alert('Error', String(e?.message || e));
     } finally {
       setSaving(false);
     }
@@ -95,11 +226,11 @@ export default function Login({onLoginSuccess}) {
           onPress={handleContinue}
           disabled={saving}>
           <Text style={styles.loginText}>
-            {saving ? 'Saving…' : 'Continue'}
+            {saving ? 'Signing in…' : 'Continue'}
           </Text>
         </TouchableOpacity>
 
-        <Text style={styles.footer}>PCI-compliant · Stripe-secured</Text>
+        <Text style={styles.footer}>PCI-compliant · Secured</Text>
       </View>
     </KeyboardAvoidingView>
   );

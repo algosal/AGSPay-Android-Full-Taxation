@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
+import * as Keychain from 'react-native-keychain';
 
 // -----------------------------
 // LOG HELPERS (READABLE OUTPUT)
@@ -54,6 +55,20 @@ function summarizePI(pi) {
         }
       : null,
   };
+}
+
+// Normalizes chargeId across SDK shapes
+function resolveChargeId(confirmedPI) {
+  const fromChargesArray =
+    Array.isArray(confirmedPI?.charges) &&
+    confirmedPI.charges[0] &&
+    confirmedPI.charges[0].id
+      ? confirmedPI.charges[0].id
+      : null;
+
+  const fromChargeObject = confirmedPI?.charge?.id || null;
+
+  return fromChargesArray || fromChargeObject || null;
 }
 
 export default function PaymentTerminal({
@@ -106,6 +121,22 @@ export default function PaymentTerminal({
     }
 
     return null;
+  }
+
+  // NOTE: Keep this local to PaymentTerminal for now, but standardized.
+  async function readAgpaySelection() {
+    try {
+      // In bridgeless mode, InternetCredentials APIs behave best when you use the same key consistently.
+      const creds = await Keychain.getInternetCredentials('agpaySelection');
+      if (!creds || !creds.password) return null;
+
+      // creds.password is your JSON string
+      const parsed = JSON.parse(creds.password);
+      return parsed || null;
+    } catch (e) {
+      console.log('readAgpaySelection error:', e);
+      return null;
+    }
   }
 
   const handleCharge = async () => {
@@ -221,6 +252,45 @@ export default function PaymentTerminal({
       if (confirmError) {
         Alert.alert('Confirm failed', confirmError.message || 'Confirm failed');
         return;
+      }
+
+      // -------------------------------------------------------------------
+      // FINAL TX PRINT (NO BACKEND CALL YET)
+      // -------------------------------------------------------------------
+      try {
+        const selection = await readAgpaySelection();
+
+        const finalTx = {
+          // Selection context
+          ownerId: selection?.ownerId || null,
+          corporateRef: selection?.corporateRef || null,
+          corporateName: selection?.corporateName || null,
+          storeRef: selection?.storeRef || null,
+          storeName: selection?.storeName || null,
+
+          // Stripe result (confirmed)
+          stripe: {
+            paymentIntentId: confirmedPI?.id || null,
+            status: confirmedPI?.status || null,
+            amount: confirmedPI?.amount || null,
+            currency: confirmedPI?.currency || null,
+            paymentMethodId: confirmedPI?.paymentMethodId || null,
+            chargeId: resolveChargeId(confirmedPI),
+          },
+
+          // Calculation + UI metadata
+          amountLabel: amountLabel || null,
+          debugMeta: debugMeta || null,
+
+          // Timestamp for traceability
+          clientEpochMs: Date.now(),
+        };
+
+        console.log('================ FINAL AGPAY TX OBJECT ================');
+        console.log(JSON.stringify(finalTx, null, 2));
+        console.log('======================================================');
+      } catch (e) {
+        console.log('Final TX print error:', e);
       }
 
       Alert.alert('Success', `Payment completed: ${amountLabel || ''}`);
