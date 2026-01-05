@@ -95,28 +95,6 @@ async function readLastTx() {
   }
 }
 
-function buildDescription({selection, debugMeta, amountLabel}) {
-  // Keep this short. Stripe description is best treated as a compact human string.
-  // (Your Lambda also truncates/sanitizes.)
-  const parts = [];
-
-  const corp = selection?.corporateName || null;
-  const store = selection?.storeName || null;
-  const note = debugMeta?.note || null;
-
-  if (corp && store) parts.push(`${corp} / ${store}`);
-  else if (corp) parts.push(String(corp));
-  else if (store) parts.push(String(store));
-
-  if (amountLabel) parts.push(String(amountLabel));
-
-  if (note && String(note).trim()) parts.push(String(note).trim());
-
-  // Collapse whitespace and cap length (client-side cap; Lambda caps again)
-  const s = parts.join(' · ').replace(/\s+/g, ' ').trim();
-  return s.length > 250 ? s.slice(0, 249) + '…' : s;
-}
-
 // -----------------------------
 // COMPONENT
 // -----------------------------
@@ -125,7 +103,7 @@ export default function PaymentTerminal({
   amountLabel, // e.g. "$10.94"
   currency = 'usd',
   theme,
-  debugMeta, // arbitrary object to log with transaction (includes note)
+  debugMeta, // arbitrary object to log with transaction
 }) {
   const terminal = useStripeTerminal();
 
@@ -235,29 +213,8 @@ export default function PaymentTerminal({
       console.log('================ AGPAY CHARGE START ================');
       pretty('CHARGE INPUT:', {amountCents, amountLabel, currency, debugMeta});
 
-      // Get selection so we can attach description + metadata to the PI.
-      const selection = await readAgpaySelection();
-
-      // NEW: send description + metadata to your create-intent Lambda
-      const description = buildDescription({selection, debugMeta, amountLabel});
-
-      const metadata = {
-        ownerId: selection?.ownerId || '',
-        corporateRef: selection?.corporateRef || '',
-        corporateName: selection?.corporateName || '',
-        storeRef: selection?.storeRef || '',
-        storeName: selection?.storeName || '',
-        note: debugMeta?.note || '',
-      };
-
       // 1) Create PaymentIntent via backend
-      const createPayload = {
-        amount: amountCents,
-        currency,
-        description, // <-- NEW (stored in Stripe PaymentIntent)
-        metadata, // <-- NEW (also stored in Stripe PaymentIntent)
-      };
-
+      const createPayload = {amount: amountCents, currency};
       pretty('Create-intent payload:', createPayload);
 
       const resp = await fetch(CREATE_INTENT_URL, {
@@ -358,6 +315,8 @@ export default function PaymentTerminal({
       // FINAL TX PRINT (NO BACKEND CALL YET)
       // -------------------------------------------------------------------
       try {
+        const selection = await readAgpaySelection();
+
         const chargeId =
           (Array.isArray(confirmedPI?.charges) &&
             confirmedPI.charges[0] &&
@@ -386,10 +345,6 @@ export default function PaymentTerminal({
           // Calculation + UI metadata
           amountLabel: amountLabel || null,
           debugMeta: debugMeta || null,
-
-          // What we sent to Stripe at PI creation time
-          descriptionSentToStripe: description || null,
-          metadataSentToStripe: metadata || null,
 
           // Timestamp for traceability
           clientEpochMs: Date.now(),
@@ -610,6 +565,7 @@ export default function PaymentTerminal({
     } finally {
       // If we didn’t enter the onPress async branch, ensure loading is false
       // (onPress branch sets its own loading lifecycle)
+      // This is intentionally conservative:
       setLoading(false);
     }
   };
