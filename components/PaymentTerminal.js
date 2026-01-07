@@ -1,4 +1,4 @@
-// components/PaymentTerminal.js
+// C:\vscode\AG\AGPay-Sand\components\PaymentTerminal.js
 import React, {useMemo, useState} from 'react';
 import {
   View,
@@ -58,7 +58,6 @@ function summarizePI(pi) {
 }
 
 // Safely stringify possibly-circular objects.
-// For Stripe PI objects, JSON.stringify should normally work, but MVP-safe is good.
 function safeStringify(value) {
   try {
     return JSON.stringify(value);
@@ -117,9 +116,111 @@ async function readLastTx() {
   }
 }
 
+// -----------------------------
+// AUTH TOKEN (JWT) HELPERS
+// -----------------------------
+async function readJwtToken() {
+  // If you store JWT elsewhere, add the service name here.
+  const candidates = ['userProfile', 'agpayAuth', 'authToken', 'session'];
+
+  for (const service of candidates) {
+    try {
+      const creds = await Keychain.getInternetCredentials(service);
+      if (!creds || !creds.password) continue;
+
+      // Most of your app stores JSON in password
+      let parsed = null;
+      try {
+        parsed = JSON.parse(creds.password);
+      } catch {
+        // If password is literally the token string, accept it
+        if (
+          typeof creds.password === 'string' &&
+          creds.password.startsWith('eyJ')
+        ) {
+          return creds.password;
+        }
+        continue;
+      }
+
+      // Common shapes
+      if (parsed?.token && typeof parsed.token === 'string')
+        return parsed.token;
+      if (parsed?.jwt && typeof parsed.jwt === 'string') return parsed.jwt;
+      if (parsed?.accessToken && typeof parsed.accessToken === 'string')
+        return parsed.accessToken;
+    } catch (e) {
+      console.log(`readJwtToken error for service=${service}:`, e);
+    }
+  }
+
+  return null;
+}
+
+// -----------------------------
+// BACKEND SAVE (DYNAMODB) HELPERS
+// -----------------------------
+const SAVE_TX_URL =
+  'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
+
+async function saveTxToBackend(finalTx) {
+  try {
+    const token = await readJwtToken();
+
+    if (!token) {
+      console.log(
+        '❌ No JWT token found in Keychain. Cannot save transaction.',
+      );
+      Alert.alert('Auth Missing', 'No JWT token found. Please log in again.');
+      return {ok: false, status: 0, error: 'Missing JWT'};
+    }
+
+    pretty('SAVE_TX finalTx =>', finalTx);
+
+    const resp = await fetch(SAVE_TX_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(finalTx),
+    });
+
+    const raw = await resp.text();
+    console.log('SAVE_TX HTTP status:', resp.status);
+
+    try {
+      pretty('SAVE_TX response JSON:', JSON.parse(raw));
+    } catch {
+      console.log('SAVE_TX response text:', raw);
+    }
+
+    if (!resp.ok) {
+      Alert.alert(
+        'Save Failed',
+        `Transaction save failed (HTTP ${resp.status}). Check logs.`,
+      );
+      return {ok: false, status: resp.status, error: raw};
+    }
+
+    let saved = null;
+    try {
+      saved = raw ? JSON.parse(raw) : null;
+    } catch {}
+
+    console.log('✅ Transaction saved to backend');
+    return {ok: true, status: resp.status, saved};
+  } catch (e) {
+    console.log('saveTxToBackend error:', e);
+    Alert.alert('Save Error', String(e?.message || e));
+    return {ok: false, status: 0, error: String(e?.message || e)};
+  }
+}
+
+// -----------------------------
+// DESCRIPTION BUILDER
+// -----------------------------
 function buildDescription({selection, debugMeta, amountLabel}) {
-  // Keep this short. Stripe description is best treated as a compact human string.
-  // (Your Lambda also truncates/sanitizes.)
   const parts = [];
 
   const corp = selection?.corporateName || null;
@@ -134,7 +235,6 @@ function buildDescription({selection, debugMeta, amountLabel}) {
 
   if (note && String(note).trim()) parts.push(String(note).trim());
 
-  // Collapse whitespace and cap length (client-side cap; Lambda caps again)
   const s = parts.join(' · ').replace(/\s+/g, ' ').trim();
   return s.length > 250 ? s.slice(0, 249) + '…' : s;
 }
@@ -148,6 +248,9 @@ export default function PaymentTerminal({
   currency = 'usd',
   theme,
   debugMeta, // arbitrary object to log with transaction (includes note)
+
+  // ✅ NEW: called after payment is confirmed successful
+  onPaymentSuccess,
 }) {
   const terminal = useStripeTerminal();
 
@@ -157,8 +260,6 @@ export default function PaymentTerminal({
     retrievePaymentIntent,
     confirmPaymentIntent,
 
-    // Refund methods: may or may not exist depending on your installed SDK wrapper version.
-    // If your version exposes different names, this file will still run and will show a friendly alert.
     collectRefundPaymentMethod,
     confirmRefund,
   } = terminal;
@@ -168,13 +269,8 @@ export default function PaymentTerminal({
   const CREATE_INTENT_URL =
     'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
-  // IMPORTANT:
-  // Your backend must implement this endpoint to create a Refund object/server-side.
-  // Typical payload: { chargeId, amount, currency }
-  // Return shape should include a "refund" object (or body JSON containing it).
-  //
   // If you don't have it yet, keep this set to null; the refund button will show a helpful message.
-  const CREATE_REFUND_URL = null; // <-- set later, e.g. 'https://.../Stripe/stripe/create-refund'
+  const CREATE_REFUND_URL = null;
 
   const t = useMemo(
     () => ({
@@ -213,12 +309,9 @@ export default function PaymentTerminal({
   function resolveRefundFromApi(payload) {
     if (!payload) return null;
 
-    // Common patterns:
-    // 1) { refund: {...} }
     if (payload.refund && typeof payload.refund === 'object')
       return payload.refund;
 
-    // 2) { body: "{\"refund\":{...}}" }
     if (typeof payload.body === 'string') {
       try {
         const inner = JSON.parse(payload.body);
@@ -230,7 +323,6 @@ export default function PaymentTerminal({
       }
     }
 
-    // 3) { body: { refund: {...} } }
     if (payload.body && typeof payload.body === 'object') {
       if (payload.body.refund && typeof payload.body.refund === 'object')
         return payload.body.refund;
@@ -257,10 +349,7 @@ export default function PaymentTerminal({
       console.log('================ AGPAY CHARGE START ================');
       pretty('CHARGE INPUT:', {amountCents, amountLabel, currency, debugMeta});
 
-      // Get selection so we can attach description + metadata to the PI.
       const selection = await readAgpaySelection();
-
-      // NEW: send description + metadata to your create-intent Lambda
       const description = buildDescription({selection, debugMeta, amountLabel});
 
       const metadata = {
@@ -276,8 +365,8 @@ export default function PaymentTerminal({
       const createPayload = {
         amount: amountCents,
         currency,
-        description, // stored in Stripe PaymentIntent
-        metadata, // stored in Stripe PaymentIntent
+        description,
+        metadata,
       };
 
       pretty('Create-intent payload:', createPayload);
@@ -291,7 +380,6 @@ export default function PaymentTerminal({
       const rawText = await resp.text();
       console.log('Create-intent HTTP status:', resp.status);
 
-      // Print raw response in readable form (if JSON)
       try {
         pretty('Create-intent raw response JSON:', JSON.parse(rawText));
       } catch {
@@ -310,7 +398,6 @@ export default function PaymentTerminal({
         console.log('Create-intent JSON parse error:', e);
       }
 
-      // Also show the parsed top-level structure
       pretty('Create-intent parsed:', piData);
 
       const clientSecret = resolveClientSecretFromApi(piData);
@@ -377,28 +464,38 @@ export default function PaymentTerminal({
       }
 
       // -------------------------------------------------------------------
-      // FINAL TX PRINT (NO BACKEND CALL YET)
+      // FINAL TX OBJECT + SAVE TO KEYCHAIN + SAVE TO BACKEND
       // -------------------------------------------------------------------
+      let receiptPayload = null;
+
       try {
-        const chargeId =
-          (Array.isArray(confirmedPI?.charges) &&
-            confirmedPI.charges[0] &&
-            confirmedPI.charges[0].id) ||
-          confirmedPI?.charge?.id ||
+        const charge0 =
+          Array.isArray(confirmedPI?.charges) && confirmedPI.charges.length
+            ? confirmedPI.charges[0]
+            : null;
+
+        const chargeId = charge0?.id || confirmedPI?.charge?.id || null;
+
+        // These may or may not exist depending on SDK object shape.
+        const brand =
+          charge0?.payment_method_details?.card_present?.brand ||
+          charge0?.payment_method_details?.card?.brand ||
           null;
 
-        // NEW: store raw Stripe returned object as JSON string (MVP).
+        const last4 =
+          charge0?.payment_method_details?.card_present?.last4 ||
+          charge0?.payment_method_details?.card?.last4 ||
+          null;
+
         const stripeReturnedObject = safeStringify(confirmedPI);
 
         const finalTx = {
-          // Selection context
           ownerId: selection?.ownerId || null,
           corporateRef: selection?.corporateRef || null,
           corporateName: selection?.corporateName || null,
           storeRef: selection?.storeRef || null,
           storeName: selection?.storeName || null,
 
-          // Stripe result (confirmed)
           stripe: {
             paymentIntentId: confirmedPI?.id || null,
             status: confirmedPI?.status || null,
@@ -408,18 +505,14 @@ export default function PaymentTerminal({
             chargeId,
           },
 
-          // NEW FIELD (MVP): raw Stripe object returned from confirmPaymentIntent
           stripeReturnedObject: stripeReturnedObject || null,
 
-          // Calculation + UI metadata
           amountLabel: amountLabel || null,
           debugMeta: debugMeta || null,
 
-          // What we sent to Stripe at PI creation time
           descriptionSentToStripe: description || null,
           metadataSentToStripe: metadata || null,
 
-          // Timestamp for traceability
           clientEpochMs: Date.now(),
         };
 
@@ -427,22 +520,46 @@ export default function PaymentTerminal({
         console.log(JSON.stringify(finalTx, null, 2));
         console.log('======================================================');
 
-        // Save last transaction for refund (until DynamoDB endpoint is ready)
         await saveLastTx({
           chargeId: finalTx?.stripe?.chargeId || null,
           paymentIntentId: finalTx?.stripe?.paymentIntentId || null,
           amount: finalTx?.stripe?.amount || null,
           currency: finalTx?.stripe?.currency || null,
           clientEpochMs: finalTx?.clientEpochMs || Date.now(),
-
-          // Optional but useful for MVP debugging
           stripeReturnedObject: finalTx?.stripeReturnedObject || null,
         });
+
+        const saveResult = await saveTxToBackend(finalTx);
+
+        if (saveResult?.ok && saveResult?.saved?.txnKey) {
+          console.log('✅ Saved txnKey:', saveResult.saved.txnKey);
+        }
+
+        // ✅ Receipt payload for the next screen
+        receiptPayload = {
+          amountText: amountLabel || null,
+          amountCents: amountCents || null,
+          currency: currency || null,
+          paymentId: finalTx?.stripe?.paymentIntentId || null,
+          chargeId: finalTx?.stripe?.chargeId || null,
+          brand,
+          last4,
+          note: debugMeta?.note || '',
+          corporateName: selection?.corporateName || '',
+          storeName: selection?.storeName || '',
+          createdAtText: new Date().toLocaleString(),
+        };
       } catch (e) {
         console.log('Final TX print/save error:', e);
       }
 
       Alert.alert('Success', `Payment completed: ${amountLabel || ''}`);
+
+      // ✅ IMPORTANT: trigger navigation AFTER success alert is queued
+      // Parent (App.js) will route to receipt + reset terminal to 0.00
+      if (typeof onPaymentSuccess === 'function') {
+        onPaymentSuccess(receiptPayload || {amountText: amountLabel || null});
+      }
     } catch (err) {
       console.log('handleCharge unexpected error:', err);
       Alert.alert('Error', String(err?.message || err));
@@ -469,15 +586,13 @@ export default function PaymentTerminal({
         return;
       }
 
-      // If refund methods aren’t available in your SDK wrapper, keep app stable and show a clear message.
       if (
         typeof collectRefundPaymentMethod !== 'function' ||
         typeof confirmRefund !== 'function'
       ) {
         Alert.alert(
           'Refund not available in SDK',
-          'Your installed @stripe/stripe-terminal-react-native version does not expose refund methods. ' +
-            'If you want, I can adjust the refund implementation to your exact SDK once you paste the terminal hook method list.',
+          'Your installed @stripe/stripe-terminal-react-native version does not expose refund methods.',
         );
         return;
       }
@@ -485,13 +600,11 @@ export default function PaymentTerminal({
       if (!CREATE_REFUND_URL) {
         Alert.alert(
           'Refund endpoint not set',
-          'Set CREATE_REFUND_URL in PaymentTerminal.js to your backend refund-create endpoint, ' +
-            'then refunds can be processed.',
+          'Set CREATE_REFUND_URL in PaymentTerminal.js to your backend refund-create endpoint.',
         );
         return;
       }
 
-      // For MVP: full refund of last amount
       const refundAmount = last?.amount;
       const refundCurrency = last?.currency || currency;
       const chargeId = last?.chargeId;
@@ -499,7 +612,7 @@ export default function PaymentTerminal({
       if (!chargeId) {
         Alert.alert(
           'Missing chargeId',
-          'Your saved last transaction does not include a chargeId. Please store chargeId after payment success.',
+          'Your saved last transaction does not include a chargeId.',
         );
         return;
       }
@@ -526,7 +639,6 @@ export default function PaymentTerminal({
                 currency: refundCurrency,
               });
 
-              // 1) Create refund server-side (Stripe requires this)
               const refundResp = await fetch(CREATE_REFUND_URL, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -568,21 +680,16 @@ export default function PaymentTerminal({
               pretty('Create-refund parsed:', refundPayload);
 
               const refund = resolveRefundFromApi(refundPayload);
-              console.log(
-                'Resolved refund object:',
-                refund ? 'present' : 'missing',
-              );
 
               if (!refund) {
                 Alert.alert(
                   'Refund error',
-                  'Backend did not return a refund object. Adjust backend response to include { refund: {...} }.',
+                  'Backend did not return a refund object.',
                 );
                 setLoading(false);
                 return;
               }
 
-              // 2) Collect refund payment method (tap card)
               Alert.alert('Ready', 'Tap the card on the phone to refund.');
 
               const {refund: collectedRefund, error: collectErr} =
@@ -604,7 +711,6 @@ export default function PaymentTerminal({
                 return;
               }
 
-              // 3) Confirm refund
               const {refund: confirmedRefund, error: confirmErr} =
                 await confirmRefund({refund: collectedRefund});
 
@@ -639,8 +745,6 @@ export default function PaymentTerminal({
       console.log('handleRefundLast error:', e);
       Alert.alert('Refund error', String(e?.message || e));
     } finally {
-      // If we didn’t enter the onPress async branch, ensure loading is false
-      // (onPress branch sets its own loading lifecycle)
       setLoading(false);
     }
   };
@@ -674,26 +778,6 @@ export default function PaymentTerminal({
         )}
       </TouchableOpacity>
 
-      {/* REFUND LAST */}
-      {/* <TouchableOpacity
-        onPress={handleRefundLast}
-        disabled={!connectedReader || loading}
-        style={[
-          styles.btnSecondary,
-          {
-            borderColor: !connectedReader || loading ? t.disabledBg : t.danger,
-            opacity: !connectedReader || loading ? 0.6 : 1,
-          },
-        ]}>
-        <Text
-          style={[
-            styles.btnSecondaryText,
-            {color: !connectedReader || loading ? t.disabledText : t.danger},
-          ]}>
-          Refund Last Payment
-        </Text>
-      </TouchableOpacity> */}
-
       {!connectedReader && (
         <Text style={[styles.helper, {color: t.muted}]}>
           Connect Tap to Pay before charging or refunding.
@@ -720,19 +804,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   btnText: {
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  btnSecondary: {
-    marginTop: 10,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    backgroundColor: 'transparent',
-  },
-  btnSecondaryText: {
     fontSize: 14,
     fontWeight: '900',
   },

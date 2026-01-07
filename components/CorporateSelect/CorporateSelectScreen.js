@@ -1,3 +1,5 @@
+// C:\vscode\AG\AGPay-Sand\components\CorporateSelect\CorporateSelectScreen.js
+
 import React, {useEffect, useState} from 'react';
 import {
   View,
@@ -19,6 +21,7 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
 
   useEffect(() => {
     loadCorporates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadCorporates() {
@@ -31,8 +34,19 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
         return;
       }
 
-      const auth = JSON.parse(authCreds.password);
-      const token = auth.token;
+      let auth = null;
+      try {
+        auth = JSON.parse(authCreds.password);
+      } catch {
+        auth = null;
+      }
+
+      const token = auth?.token;
+
+      if (!token) {
+        Alert.alert('Auth error', 'Missing token. Please log in again.');
+        return;
+      }
 
       console.log('CORPORATES → fetching with JWT');
 
@@ -52,7 +66,13 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
         return;
       }
 
-      const data = JSON.parse(text);
+      let data = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+
       console.log('CORPORATES → received:', data);
 
       setCorporates(Array.isArray(data) ? data : []);
@@ -65,19 +85,24 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
   }
 
   function renderItem({item}) {
+    const name = item?.corporateName || item?.dbaName || 'Unnamed Corporate';
+    const sub = `${item?.industry || '—'} · ${item?.country || ''}`.trim();
+
     return (
       <TouchableOpacity
         style={styles.card}
         onPress={() => {
+          // HARDENING: never advance if corporateId missing
+          if (!item?.corporateId) {
+            Alert.alert('Select corporate', 'Invalid corporate record.');
+            return;
+          }
+
           console.log('CORPORATE PICKED:', item);
           onCorporatePicked(item);
         }}>
-        <Text style={styles.name}>
-          {item.corporateName || item.dbaName || 'Unnamed Corporate'}
-        </Text>
-        <Text style={styles.sub}>
-          {item.industry || '—'} · {item.country || ''}
-        </Text>
+        <Text style={styles.name}>{name}</Text>
+        <Text style={styles.sub}>{sub}</Text>
       </TouchableOpacity>
     );
   }
@@ -102,9 +127,19 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
 
       <FlatList
         data={corporates}
-        keyExtractor={item => item.corporateId}
+        keyExtractor={(item, idx) => item?.corporateId || String(idx)}
         renderItem={renderItem}
         contentContainerStyle={{paddingBottom: 40}}
+        ListEmptyComponent={
+          <View style={{marginTop: 40, alignItems: 'center'}}>
+            <Text style={{color: '#9ca3af', marginBottom: 14}}>
+              No corporates found.
+            </Text>
+            <TouchableOpacity style={styles.reloadBtn} onPress={loadCorporates}>
+              <Text style={styles.reloadText}>Reload</Text>
+            </TouchableOpacity>
+          </View>
+        }
       />
     </View>
   );
@@ -160,5 +195,15 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 12,
     color: '#9ca3af',
+  },
+  reloadBtn: {
+    backgroundColor: GOLD,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  reloadText: {
+    color: '#020617',
+    fontWeight: '800',
   },
 });

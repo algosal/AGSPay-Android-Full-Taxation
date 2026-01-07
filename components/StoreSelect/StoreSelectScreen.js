@@ -38,6 +38,7 @@ export default function StoreSelectScreen({
   useEffect(() => {
     if (!corporateId) {
       Alert.alert('Missing corporate', 'Please select a corporate first.');
+      onBack?.(); // HARD STOP: force back to corporate select
       return;
     }
     loadStores();
@@ -90,7 +91,6 @@ export default function StoreSelectScreen({
     }
   }
 
-  // Filter stores to selected corporate
   const filteredStores = useMemo(() => {
     if (!Array.isArray(stores) || !corporateId) return [];
     return stores.filter(s => s?.corporateId === corporateId);
@@ -114,8 +114,8 @@ export default function StoreSelectScreen({
       }
 
       const ownerUuid =
-        auth.ownerIdRaw || // if you stored it this way
-        auth.ownerId || // may be raw uuid (preferred)
+        auth.ownerIdRaw ||
+        auth.ownerId ||
         auth.userId ||
         auth.profile?.userId ||
         null;
@@ -148,12 +148,23 @@ export default function StoreSelectScreen({
       const storeRef = `${storeUuid}#${Math.trunc(Number(storeEpoch))}`;
 
       const selectionPayload = {
-        ownerId: ownerUuid, // RAW uuid as you requested
+        ownerId: ownerUuid,
         corporateRef,
         corporateName,
         storeRef,
         storeName: store?.storeName || 'Store',
       };
+
+      // HARDENING: ensure payload is complete before proceeding
+      const isComplete =
+        !!selectionPayload.ownerId &&
+        !!selectionPayload.corporateRef &&
+        !!selectionPayload.storeRef;
+
+      if (!isComplete) {
+        Alert.alert('Error', 'Selection is incomplete. Please try again.');
+        return;
+      }
 
       console.log('AGPAY SELECTION → saving:', selectionPayload);
 

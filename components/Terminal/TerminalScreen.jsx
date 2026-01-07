@@ -1,3 +1,5 @@
+// C:\vscode\AG\AGPay-Sand\components\Terminal\TerminalScreen.js
+
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
@@ -22,7 +24,12 @@ import PaymentTerminal from '../PaymentTerminal';
 import terminalStyles, {AG} from './terminal.styles';
 import {AGPAY_CONFIG} from './agpay.config';
 
-const USE_SIMULATED_READER = __DEV__;
+/**
+ * INVESTOR DEMO MODE
+ */
+const FORCE_SIMULATED_READER = true;
+
+// Only used when FORCE_SIMULATED_READER = false
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
 async function requestLocationPermissionIfNeeded() {
@@ -56,10 +63,8 @@ const dollarsFromCents = c => (c / 100).toFixed(2);
 
 async function clearAgpaySelection() {
   try {
-    const res = await Keychain.resetInternetCredentials({
-      server: 'agpaySelection',
-    });
-    console.log('ChangeStore resetInternetCredentials(agpaySelection) =>', res);
+    await Keychain.resetInternetCredentials('agpaySelection');
+    console.log('✅ Cleared agpaySelection');
   } catch (e) {
     console.log('clearAgpaySelection error:', e);
   }
@@ -69,7 +74,8 @@ export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
   onLogout,
-  onChangeStoreRequested, // OPTIONAL: App.js can pass this later
+  onChangeStoreRequested,
+  onPaymentSuccess, // App.js routes to receipt
 }) {
   const s = terminalStyles;
 
@@ -82,6 +88,9 @@ export default function TerminalScreen({
     discoveredReaders,
     setTapToPayUxConfiguration,
     supportsReadersOfType,
+
+    // force which simulated test card is used (prevents chip+PIN simulated flows)
+    setSimulatedCard,
   } = useStripeTerminal({
     onUpdateDiscoveredReaders: readers =>
       console.log('onUpdateDiscoveredReaders:', readers),
@@ -91,15 +100,23 @@ export default function TerminalScreen({
   const [connecting, setConnecting] = useState(false);
   const [tapToPaySupported, setTapToPaySupported] = useState(null);
 
-  const [subtotalInput, setSubtotalInput] = useState('10.00');
+  // ✅ Start at 0.00 so after charge we can reset to the same value
+  const [subtotalInput, setSubtotalInput] = useState('0.00');
 
   const latestReadersRef = useRef([]);
+
+  const USE_SIMULATED_READER = !!FORCE_SIMULATED_READER;
 
   useEffect(() => {
     console.log(
       '✅ RUNNING TerminalScreen:',
       'components/Terminal/TerminalScreen.js',
     );
+    console.log('AGPay build flags:', {
+      FORCE_SIMULATED_READER,
+      USE_SIMULATED_READER,
+      LIVE_LOCATION_ID_used_only_if_real: LIVE_LOCATION_ID,
+    });
   }, []);
 
   // Init
@@ -107,6 +124,7 @@ export default function TerminalScreen({
     (async () => {
       const {error} = await initialize();
       if (error) {
+        console.log('Stripe Terminal initialize error:', error);
         Alert.alert('Stripe Terminal', 'Failed to initialize Terminal');
         return;
       }
@@ -128,7 +146,10 @@ export default function TerminalScreen({
     if (!initialized) return;
     supportsReadersOfType({deviceType: 'tapToPay', discoveryMethod: 'tapToPay'})
       .then(r => setTapToPaySupported(r?.supported ?? null))
-      .catch(() => setTapToPaySupported(null));
+      .catch(e => {
+        console.log('supportsReadersOfType error:', e);
+        setTapToPaySupported(null);
+      });
   }, [initialized, supportsReadersOfType]);
 
   // Keep freshest readers
@@ -153,11 +174,9 @@ export default function TerminalScreen({
 
     const taxCents = Math.round(subtotalCents * taxRate);
 
-    // Stripe baseline fee
     const stripeFeeCents =
       Math.round(subtotalCents * stripeFeeRate) + stripeFeeFixedCents;
 
-    // AGPay ramp fee (smooth, capped)
     const agFeeBase = Math.round(
       agFeeMinCents + subtotalCents * agFeeSlopeRate,
     );
@@ -166,7 +185,6 @@ export default function TerminalScreen({
       Math.max(agFeeMinCents, agFeeBase),
     );
 
-    // Total fee + total charge
     const feeCents = stripeFeeCents + agFeeCents;
     const totalCents = subtotalCents + taxCents + feeCents;
 
@@ -193,6 +211,9 @@ export default function TerminalScreen({
     });
   }, [calc, subtotalInput]);
 
+  // ✅ HARD BLOCK: do not allow $0.00 charges
+  const canCharge = calc.totalCents > 0;
+
   const handleConnectTapToPay = async () => {
     if (!initialized) return;
 
@@ -206,12 +227,18 @@ export default function TerminalScreen({
 
     setConnecting(true);
 
+    console.log('AGPay DISCOVER starting:', {
+      discoveryMethod: 'tapToPay',
+      simulated: USE_SIMULATED_READER,
+    });
+
     const {error} = await discoverReaders({
       discoveryMethod: 'tapToPay',
       simulated: USE_SIMULATED_READER,
     });
 
     if (error) {
+      console.log('discoverReaders error:', error);
       Alert.alert('Discover error', error.message);
       setConnecting(false);
       return;
@@ -227,8 +254,14 @@ export default function TerminalScreen({
     const locationIdToUse = USE_SIMULATED_READER
       ? reader.locationId
       : LIVE_LOCATION_ID;
+
     if (!locationIdToUse) {
-      Alert.alert('Missing location ID');
+      Alert.alert(
+        'Missing location ID',
+        USE_SIMULATED_READER
+          ? 'Simulated reader returned no locationId.'
+          : 'LIVE_LOCATION_ID is not set.',
+      );
       setConnecting(false);
       return;
     }
@@ -243,7 +276,30 @@ export default function TerminalScreen({
       {reader, locationId: locationIdToUse},
       'tapToPay',
     );
-    if (connectErr) Alert.alert('Connect error', connectErr.message);
+
+    if (connectErr) {
+      console.log('connectReader error:', connectErr);
+      Alert.alert('Connect error', connectErr.message);
+      setConnecting(false);
+      return;
+    }
+
+    console.log('✅ Reader connected');
+
+    // Force a standard simulated card that does NOT require chip+PIN
+    if (USE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
+      try {
+        console.log('Setting simulated card => 4242...');
+        const {error: simErr} = await setSimulatedCard('4242424242424242');
+        if (simErr) {
+          console.log('setSimulatedCard error:', simErr);
+        } else {
+          console.log('✅ Simulated card set to 4242424242424242');
+        }
+      } catch (e) {
+        console.log('setSimulatedCard exception:', e);
+      }
+    }
 
     setConnecting(false);
   };
@@ -265,8 +321,6 @@ export default function TerminalScreen({
           onPress: async () => {
             await clearAgpaySelection();
 
-            // If App.js supplies this callback, we can force a clean route immediately.
-            // Otherwise App.js will still route correctly on next boot/login cycle.
             if (typeof onChangeStoreRequested === 'function') {
               onChangeStoreRequested();
             } else {
@@ -290,6 +344,39 @@ export default function TerminalScreen({
   const totalLabel = `$${dollarsFromCents(calc.totalCents)}`;
   const connectDisabled = connecting || !initialized;
 
+  // Called by PaymentTerminal after charge success
+  const handleChargeSuccessFromPaymentTerminal = chargeResult => {
+    console.log(
+      '✅ Charge success received from PaymentTerminal:',
+      chargeResult,
+    );
+
+    const receiptPayload = {
+      amountText: totalLabel,
+      amountCents: calc.totalCents,
+      currency: AGPAY_CONFIG.currency || 'usd',
+      paymentNote: paymentNote || '',
+      createdAtText: new Date().toLocaleString(),
+      paymentId: chargeResult?.paymentId || chargeResult?.id || null,
+      chargeId: chargeResult?.chargeId || null,
+      last4: chargeResult?.last4 || null,
+      brand: chargeResult?.brand || null,
+    };
+
+    // ✅ RESET TERMINAL INPUTS FOR NEXT CUSTOMER
+    setSubtotalInput('0.00');
+
+    // Optional but recommended for cashier flow:
+    // clear previous note so it doesn't carry over to next transaction
+    if (typeof setPaymentNote === 'function') setPaymentNote('');
+
+    if (typeof onPaymentSuccess === 'function') {
+      onPaymentSuccess(receiptPayload);
+    } else {
+      console.log('onPaymentSuccess not provided; staying on terminal.');
+    }
+  };
+
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.content}>
       {/* Header */}
@@ -312,7 +399,7 @@ export default function TerminalScreen({
 
       <Text style={s.subtitle}>Quick, simple in-person payments</Text>
 
-      {/* What to charge (top) */}
+      {/* What to charge */}
       <View style={s.card}>
         <Text style={s.cardTitle}>What to charge</Text>
 
@@ -323,7 +410,7 @@ export default function TerminalScreen({
             keyboardType="numeric"
             value={subtotalInput}
             onChangeText={setSubtotalInput}
-            placeholder="10.00"
+            placeholder="0.00"
             placeholderTextColor={AG.muted}
           />
         </View>
@@ -350,6 +437,12 @@ export default function TerminalScreen({
             <Text style={[s.rowLabel, {fontWeight: '900'}]}>Total</Text>
             <Text style={s.rowValueGold}>{totalLabel}</Text>
           </View>
+
+          {!canCharge && (
+            <Text style={[s.statusText, {marginTop: 10, color: AG.danger}]}>
+              Enter an amount greater than $0.00 to charge.
+            </Text>
+          )}
         </View>
       </View>
 
@@ -360,7 +453,10 @@ export default function TerminalScreen({
         <Text style={s.statusText}>
           SDK: {initialized ? 'Ready' : 'Initializing'}
         </Text>
-        <Text style={s.statusText}>Tap to Pay: {supportLabel}</Text>
+        <Text style={s.statusText}>
+          Tap to Pay:{' '}
+          {USE_SIMULATED_READER ? '🧪 Simulated (demo)' : supportLabel}
+        </Text>
         <Text style={s.statusText}>
           Reader:{' '}
           {connectedReader
@@ -424,6 +520,9 @@ export default function TerminalScreen({
             disabledBg: AG.disabledBg,
             disabledText: AG.disabledText,
           }}
+          // ✅ HARD GATE: do not allow charge if total is 0 (still also enforced in PaymentTerminal)
+          disabled={!canCharge}
+          onPaymentSuccess={handleChargeSuccessFromPaymentTerminal}
         />
       </View>
     </ScrollView>
