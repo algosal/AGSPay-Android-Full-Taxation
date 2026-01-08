@@ -1,5 +1,3 @@
-// C:\vscode\AG\AGPay-Sand\components\Terminal\TerminalScreen.js
-
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
@@ -20,16 +18,10 @@ import {
 
 import * as Keychain from 'react-native-keychain';
 
-import PaymentTerminal from '../PaymentTerminal';
 import terminalStyles, {AG} from './terminal.styles';
 import {AGPAY_CONFIG} from './agpay.config';
 
-/**
- * INVESTOR DEMO MODE
- */
 const FORCE_SIMULATED_READER = true;
-
-// Only used when FORCE_SIMULATED_READER = false
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
 async function requestLocationPermissionIfNeeded() {
@@ -45,19 +37,19 @@ async function requestLocationPermissionIfNeeded() {
   );
 
   if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-    Alert.alert(
-      'Permission required',
-      'Location permission is required for Tap to Pay.',
-    );
+    Alert.alert('Permission required', 'Location permission is required.');
     return false;
   }
   return true;
 }
 
 function parseMoney(text) {
-  const n = parseFloat(String(text || '').replace(',', '.'));
+  const raw = String(text ?? '').trim();
+  if (!raw) return 0;
+  const n = parseFloat(raw.replace(',', '.'));
   return Number.isFinite(n) ? n : 0;
 }
+
 const centsFromDollars = d => Math.round(d * 100);
 const dollarsFromCents = c => (c / 100).toFixed(2);
 
@@ -75,7 +67,7 @@ export default function TerminalScreen({
   setPaymentNote,
   onLogout,
   onChangeStoreRequested,
-  onPaymentSuccess, // App.js routes to receipt
+  onGoToTip, // ✅ required
 }) {
   const s = terminalStyles;
 
@@ -88,8 +80,6 @@ export default function TerminalScreen({
     discoveredReaders,
     setTapToPayUxConfiguration,
     supportsReadersOfType,
-
-    // force which simulated test card is used (prevents chip+PIN simulated flows)
     setSimulatedCard,
   } = useStripeTerminal({
     onUpdateDiscoveredReaders: readers =>
@@ -100,26 +90,17 @@ export default function TerminalScreen({
   const [connecting, setConnecting] = useState(false);
   const [tapToPaySupported, setTapToPaySupported] = useState(null);
 
-  // ✅ Start at 0.00 so after charge we can reset to the same value
-  const [subtotalInput, setSubtotalInput] = useState('0.00');
+  const [subtotalInput, setSubtotalInput] = useState('');
 
   const latestReadersRef = useRef([]);
-
   const USE_SIMULATED_READER = !!FORCE_SIMULATED_READER;
 
   useEffect(() => {
     console.log(
-      '✅ RUNNING TerminalScreen:',
-      'components/Terminal/TerminalScreen.js',
+      '✅ RUNNING TerminalScreen: components/Terminal/TerminalScreen.jsx',
     );
-    console.log('AGPay build flags:', {
-      FORCE_SIMULATED_READER,
-      USE_SIMULATED_READER,
-      LIVE_LOCATION_ID_used_only_if_real: LIVE_LOCATION_ID,
-    });
   }, []);
 
-  // Init
   useEffect(() => {
     (async () => {
       const {error} = await initialize();
@@ -141,7 +122,6 @@ export default function TerminalScreen({
     })();
   }, [initialize, setTapToPayUxConfiguration]);
 
-  // Support check
   useEffect(() => {
     if (!initialized) return;
     supportsReadersOfType({deviceType: 'tapToPay', discoveryMethod: 'tapToPay'})
@@ -152,13 +132,11 @@ export default function TerminalScreen({
       });
   }, [initialized, supportsReadersOfType]);
 
-  // Keep freshest readers
   useEffect(() => {
     if (Array.isArray(discoveredReaders))
       latestReadersRef.current = discoveredReaders;
   }, [discoveredReaders]);
 
-  // Calc
   const calc = useMemo(() => {
     const subtotal = parseMoney(subtotalInput);
     const subtotalCents = centsFromDollars(subtotal);
@@ -173,7 +151,6 @@ export default function TerminalScreen({
     const agFeeSlopeRate = Number(AGPAY_CONFIG.agFeeSlopeRate ?? 0);
 
     const taxCents = Math.round(subtotalCents * taxRate);
-
     const stripeFeeCents =
       Math.round(subtotalCents * stripeFeeRate) + stripeFeeFixedCents;
 
@@ -188,31 +165,22 @@ export default function TerminalScreen({
     const feeCents = stripeFeeCents + agFeeCents;
     const totalCents = subtotalCents + taxCents + feeCents;
 
-    return {
-      subtotalCents,
-      taxRate,
-      taxCents,
-      stripeFeeCents,
-      agFeeCents,
-      feeCents,
-      totalCents,
-    };
+    return {subtotalCents, taxRate, taxCents, feeCents, totalCents};
   }, [subtotalInput]);
 
-  useEffect(() => {
-    console.log('AGPay CALC:', {
-      subtotalInput,
-      subtotalCents: calc.subtotalCents,
-      taxRate: calc.taxRate,
-      taxCents: calc.taxCents,
-      serviceFeeCents: calc.feeCents,
-      totalCents: calc.totalCents,
-      totalDollars: dollarsFromCents(calc.totalCents),
-    });
-  }, [calc, subtotalInput]);
+  const rawAmountEntered = String(subtotalInput ?? '').trim();
+  const subtotalNumber = parseMoney(subtotalInput);
+  const hasValidAmount = rawAmountEntered.length > 0 && subtotalNumber > 0;
 
-  // ✅ HARD BLOCK: do not allow $0.00 charges
-  const canCharge = calc.totalCents > 0;
+  const supportLabel =
+    tapToPaySupported === null
+      ? 'Unknown'
+      : tapToPaySupported
+      ? '✅ Supported'
+      : '❌ Not supported';
+
+  const baseTotalLabel = `$${dollarsFromCents(calc.totalCents)}`;
+  const connectDisabled = connecting || !initialized;
 
   const handleConnectTapToPay = async () => {
     if (!initialized) return;
@@ -227,81 +195,48 @@ export default function TerminalScreen({
 
     setConnecting(true);
 
-    console.log('AGPay DISCOVER starting:', {
-      discoveryMethod: 'tapToPay',
-      simulated: USE_SIMULATED_READER,
-    });
+    try {
+      const {error} = await discoverReaders({
+        discoveryMethod: 'tapToPay',
+        simulated: USE_SIMULATED_READER,
+      });
 
-    const {error} = await discoverReaders({
-      discoveryMethod: 'tapToPay',
-      simulated: USE_SIMULATED_READER,
-    });
-
-    if (error) {
-      console.log('discoverReaders error:', error);
-      Alert.alert('Discover error', error.message);
-      setConnecting(false);
-      return;
-    }
-
-    const reader = latestReadersRef.current[0];
-    if (!reader) {
-      Alert.alert('No reader found');
-      setConnecting(false);
-      return;
-    }
-
-    const locationIdToUse = USE_SIMULATED_READER
-      ? reader.locationId
-      : LIVE_LOCATION_ID;
-
-    if (!locationIdToUse) {
-      Alert.alert(
-        'Missing location ID',
-        USE_SIMULATED_READER
-          ? 'Simulated reader returned no locationId.'
-          : 'LIVE_LOCATION_ID is not set.',
-      );
-      setConnecting(false);
-      return;
-    }
-
-    console.log('AGPay CONNECT:', {
-      simulated: USE_SIMULATED_READER,
-      reader,
-      locationIdToUse,
-    });
-
-    const {error: connectErr} = await connectReader(
-      {reader, locationId: locationIdToUse},
-      'tapToPay',
-    );
-
-    if (connectErr) {
-      console.log('connectReader error:', connectErr);
-      Alert.alert('Connect error', connectErr.message);
-      setConnecting(false);
-      return;
-    }
-
-    console.log('✅ Reader connected');
-
-    // Force a standard simulated card that does NOT require chip+PIN
-    if (USE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
-      try {
-        console.log('Setting simulated card => 4242...');
-        const {error: simErr} = await setSimulatedCard('4242424242424242');
-        if (simErr) {
-          console.log('setSimulatedCard error:', simErr);
-        } else {
-          console.log('✅ Simulated card set to 4242424242424242');
-        }
-      } catch (e) {
-        console.log('setSimulatedCard exception:', e);
+      if (error) {
+        Alert.alert('Discover error', error.message);
+        return;
       }
-    }
 
-    setConnecting(false);
+      const reader = latestReadersRef.current[0];
+      if (!reader) {
+        Alert.alert('No reader found');
+        return;
+      }
+
+      const locationIdToUse = USE_SIMULATED_READER
+        ? reader.locationId
+        : LIVE_LOCATION_ID;
+
+      const {error: connectErr} = await connectReader(
+        {reader, locationId: locationIdToUse},
+        'tapToPay',
+      );
+
+      if (connectErr) {
+        Alert.alert('Connect error', connectErr.message);
+        return;
+      }
+
+      console.log('✅ Reader connected');
+
+      if (USE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
+        await setSimulatedCard({number: '4242424242424242', type: 'credit'});
+        console.log('✅ Simulated CREDIT card set (no PIN)');
+      }
+    } catch (e) {
+      console.log('handleConnectTapToPay error:', e);
+    } finally {
+      setConnecting(false);
+    }
   };
 
   const handleDisconnect = async () => {
@@ -320,73 +255,61 @@ export default function TerminalScreen({
           style: 'destructive',
           onPress: async () => {
             await clearAgpaySelection();
-
-            if (typeof onChangeStoreRequested === 'function') {
-              onChangeStoreRequested();
-            } else {
-              console.log(
-                'ChangeStore: onChangeStoreRequested not provided; selection cleared.',
-              );
-            }
+            onChangeStoreRequested?.();
           },
         },
       ],
     );
   };
 
-  const supportLabel =
-    tapToPaySupported === null
-      ? 'Unknown'
-      : tapToPaySupported
-      ? '✅ Supported'
-      : '❌ Not supported';
-
-  const totalLabel = `$${dollarsFromCents(calc.totalCents)}`;
-  const connectDisabled = connecting || !initialized;
-
-  // Called by PaymentTerminal after charge success
-  const handleChargeSuccessFromPaymentTerminal = chargeResult => {
-    console.log(
-      '✅ Charge success received from PaymentTerminal:',
-      chargeResult,
+  const alertAmountMissing = () => {
+    Alert.alert(
+      'Enter amount',
+      'No amount was entered. Please enter an amount.',
     );
+  };
 
-    const receiptPayload = {
-      amountText: totalLabel,
-      amountCents: calc.totalCents,
+  const handleGoTip = async () => {
+    const raw = String(subtotalInput ?? '').trim();
+    const subtotal = parseMoney(subtotalInput);
+
+    if (!raw) return alertAmountMissing();
+    if (!Number.isFinite(subtotal) || subtotal <= 0) {
+      Alert.alert('Invalid amount', 'Enter an amount greater than $0.00.');
+      return;
+    }
+
+    if (typeof onGoToTip !== 'function') {
+      Alert.alert('Missing route', 'onGoToTip is not configured.');
+      return;
+    }
+
+    onGoToTip({
+      baseAmountCents: calc.totalCents,
+      baseAmountLabel: baseTotalLabel,
       currency: AGPAY_CONFIG.currency || 'usd',
       paymentNote: paymentNote || '',
-      createdAtText: new Date().toLocaleString(),
-      paymentId: chargeResult?.paymentId || chargeResult?.id || null,
-      chargeId: chargeResult?.chargeId || null,
-      last4: chargeResult?.last4 || null,
-      brand: chargeResult?.brand || null,
-    };
-
-    // ✅ RESET TERMINAL INPUTS FOR NEXT CUSTOMER
-    setSubtotalInput('0.00');
-
-    // Optional but recommended for cashier flow:
-    // clear previous note so it doesn't carry over to next transaction
-    if (typeof setPaymentNote === 'function') setPaymentNote('');
-
-    if (typeof onPaymentSuccess === 'function') {
-      onPaymentSuccess(receiptPayload);
-    } else {
-      console.log('onPaymentSuccess not provided; staying on terminal.');
-    }
+    });
   };
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.content}>
-      {/* Header */}
       <View style={s.headerRow}>
-        <Text style={s.title}>
+        <Text style={[s.title, {fontSize: 22}]}>
           <Text style={{color: AG.gold}}>AG</Text>
           <Text style={{color: AG.text}}>Pay · Tap to Pay</Text>
         </Text>
 
         <View style={{flexDirection: 'row', gap: 10}}>
+          <TouchableOpacity
+            onPress={connectedReader ? handleDisconnect : handleConnectTapToPay}
+            disabled={connectDisabled}
+            style={[s.logoutBtn, connectDisabled && {opacity: 0.6}]}>
+            <Text style={s.logoutIcon}>
+              {connectedReader ? '🔌' : connecting ? '⏳' : '📶'}
+            </Text>
+          </TouchableOpacity>
+
           <TouchableOpacity onPress={handleChangeStore} style={s.logoutBtn}>
             <Text style={s.logoutIcon}>🏪</Text>
           </TouchableOpacity>
@@ -397,133 +320,109 @@ export default function TerminalScreen({
         </View>
       </View>
 
-      <Text style={s.subtitle}>Quick, simple in-person payments</Text>
+      <Text style={[s.subtitle, {fontSize: 15}]}>
+        Quick, simple in-person payments
+      </Text>
 
-      {/* What to charge */}
       <View style={s.card}>
-        <Text style={s.cardTitle}>What to charge</Text>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>What to charge</Text>
 
         <View style={s.chargeRow}>
-          <Text style={s.dollar}>$</Text>
+          <Text style={[s.dollar, {fontSize: 26}]}>$</Text>
           <TextInput
-            style={s.amountInput}
+            style={[s.amountInput, {fontSize: 24}]}
             keyboardType="numeric"
             value={subtotalInput}
             onChangeText={setSubtotalInput}
-            placeholder="0.00"
+            placeholder="Enter amount"
             placeholderTextColor={AG.muted}
           />
         </View>
 
         <View style={s.dividerTop}>
           <View style={s.row}>
-            <Text style={s.rowLabel}>Subtotal</Text>
-            <Text style={s.rowValue}>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Subtotal</Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>
               ${dollarsFromCents(calc.subtotalCents)}
             </Text>
           </View>
+
           <View style={s.row}>
-            <Text style={s.rowLabel}>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>
               Tax ({(calc.taxRate * 100).toFixed(3)}%)
             </Text>
-            <Text style={s.rowValue}>${dollarsFromCents(calc.taxCents)}</Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>
+              ${dollarsFromCents(calc.taxCents)}
+            </Text>
           </View>
+
           <View style={s.row}>
-            <Text style={s.rowLabel}>AGPay fee</Text>
-            <Text style={s.rowValue}>${dollarsFromCents(calc.feeCents)}</Text>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Fees</Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>
+              ${dollarsFromCents(calc.feeCents)}
+            </Text>
           </View>
 
-          <View style={[s.row, {marginTop: 10}]}>
-            <Text style={[s.rowLabel, {fontWeight: '900'}]}>Total</Text>
-            <Text style={s.rowValueGold}>{totalLabel}</Text>
+          <View style={[s.row, {marginTop: 12, alignItems: 'flex-end'}]}>
+            <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
+              Base total
+            </Text>
+            <Text style={[s.rowValueGold, {fontSize: 28, fontWeight: '900'}]}>
+              {baseTotalLabel}
+            </Text>
           </View>
 
-          {!canCharge && (
+          {!hasValidAmount && (
             <Text style={[s.statusText, {marginTop: 10, color: AG.danger}]}>
-              Enter an amount greater than $0.00 to charge.
+              Enter an amount greater than $0.00 to continue.
             </Text>
           )}
         </View>
       </View>
 
-      {/* Reader status */}
       <View style={s.card}>
-        <Text style={s.cardTitle}>Reader status</Text>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>Reader status</Text>
 
-        <Text style={s.statusText}>
+        <Text style={[s.statusText, {fontSize: 14}]}>
           SDK: {initialized ? 'Ready' : 'Initializing'}
         </Text>
-        <Text style={s.statusText}>
+        <Text style={[s.statusText, {fontSize: 14}]}>
           Tap to Pay:{' '}
           {USE_SIMULATED_READER ? '🧪 Simulated (demo)' : supportLabel}
         </Text>
-        <Text style={s.statusText}>
+        <Text style={[s.statusText, {fontSize: 14}]}>
           Reader:{' '}
           {connectedReader
             ? connectedReader.label || 'Connected'
             : 'Not connected'}
         </Text>
-
-        <TouchableOpacity
-          style={[s.primaryBtn, connectDisabled && s.primaryBtnDisabled]}
-          onPress={handleConnectTapToPay}
-          disabled={connectDisabled}>
-          <Text
-            style={[
-              s.primaryBtnText,
-              connectDisabled && s.primaryBtnTextDisabled,
-            ]}>
-            {connecting ? 'Connecting…' : 'Connect Tap to Pay'}
-          </Text>
-        </TouchableOpacity>
-
-        {connectedReader && (
-          <TouchableOpacity style={s.secondaryBtn} onPress={handleDisconnect}>
-            <Text style={s.secondaryBtnText}>Disconnect</Text>
-          </TouchableOpacity>
-        )}
       </View>
 
-      {/* Notes + Charge */}
       <View style={s.card}>
-        <Text style={s.cardTitle}>Notes</Text>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>Notes</Text>
 
         <TextInput
-          style={s.noteInput}
+          style={[s.noteInput, {fontSize: 16}]}
           placeholder="e.g. Chicken over rice + soda"
           placeholderTextColor={AG.muted}
           value={paymentNote}
           onChangeText={setPaymentNote}
         />
 
-        <PaymentTerminal
-          amountCents={calc.totalCents}
-          amountLabel={totalLabel}
-          currency={AGPAY_CONFIG.currency || 'usd'}
-          debugMeta={{
-            subtotalInput,
-            subtotalCents: calc.subtotalCents,
-            taxRate: calc.taxRate,
-            taxCents: calc.taxCents,
-            serviceFeeCents: calc.feeCents,
-            note: paymentNote,
-          }}
-          theme={{
-            primary: AG.gold,
-            primaryText: AG.goldText,
-            text: AG.text,
-            subtext: AG.subtext,
-            muted: AG.muted,
-            border: AG.border,
-            inputBg: AG.inputBg,
-            danger: AG.danger,
-            disabledBg: AG.disabledBg,
-            disabledText: AG.disabledText,
-          }}
-          // ✅ HARD GATE: do not allow charge if total is 0 (still also enforced in PaymentTerminal)
-          disabled={!canCharge}
-          onPaymentSuccess={handleChargeSuccessFromPaymentTerminal}
-        />
+        <TouchableOpacity
+          onPress={handleGoTip}
+          style={[
+            s.primaryBtn,
+            {
+              marginTop: 12,
+              backgroundColor: AG.gold,
+              opacity: hasValidAmount ? 1 : 0.65,
+            },
+          ]}>
+          <Text style={[s.primaryBtnText, {color: AG.goldText, fontSize: 16}]}>
+            Continue
+          </Text>
+        </TouchableOpacity>
       </View>
     </ScrollView>
   );

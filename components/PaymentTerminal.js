@@ -1,13 +1,6 @@
 // C:\vscode\AG\AGPay-Sand\components\PaymentTerminal.js
-import React, {useMemo, useState} from 'react';
-import {
-  View,
-  Text,
-  Alert,
-  StyleSheet,
-  ActivityIndicator,
-  TouchableOpacity,
-} from 'react-native';
+import React, {forwardRef, useImperativeHandle, useMemo, useState} from 'react';
+import {View, Text, Alert, StyleSheet, ActivityIndicator} from 'react-native';
 import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
 
@@ -105,22 +98,10 @@ async function saveLastTx(lastTx) {
   }
 }
 
-async function readLastTx() {
-  try {
-    const creds = await Keychain.getInternetCredentials('agpayLastTx');
-    if (!creds || !creds.password) return null;
-    return JSON.parse(creds.password);
-  } catch (e) {
-    console.log('readLastTx error:', e);
-    return null;
-  }
-}
-
 // -----------------------------
 // AUTH TOKEN (JWT) HELPERS
 // -----------------------------
 async function readJwtToken() {
-  // If you store JWT elsewhere, add the service name here.
   const candidates = ['userProfile', 'agpayAuth', 'authToken', 'session'];
 
   for (const service of candidates) {
@@ -128,12 +109,10 @@ async function readJwtToken() {
       const creds = await Keychain.getInternetCredentials(service);
       if (!creds || !creds.password) continue;
 
-      // Most of your app stores JSON in password
       let parsed = null;
       try {
         parsed = JSON.parse(creds.password);
       } catch {
-        // If password is literally the token string, accept it
         if (
           typeof creds.password === 'string' &&
           creds.password.startsWith('eyJ')
@@ -143,7 +122,6 @@ async function readJwtToken() {
         continue;
       }
 
-      // Common shapes
       if (parsed?.token && typeof parsed.token === 'string')
         return parsed.token;
       if (parsed?.jwt && typeof parsed.jwt === 'string') return parsed.jwt;
@@ -232,7 +210,6 @@ function buildDescription({selection, debugMeta, amountLabel}) {
   else if (store) parts.push(String(store));
 
   if (amountLabel) parts.push(String(amountLabel));
-
   if (note && String(note).trim()) parts.push(String(note).trim());
 
   const s = parts.join(' · ').replace(/\s+/g, ' ').trim();
@@ -240,18 +217,21 @@ function buildDescription({selection, debugMeta, amountLabel}) {
 }
 
 // -----------------------------
-// COMPONENT
+// COMPONENT (NO BUTTON UI)
+// - TerminalScreen owns the "Cash" + "Credit" buttons
+// - TerminalScreen triggers card flow via ref: terminalRef.current.startCardPayment()
 // -----------------------------
-export default function PaymentTerminal({
-  amountCents, // REQUIRED: total cents to charge
-  amountLabel, // e.g. "$10.94"
-  currency = 'usd',
-  theme,
-  debugMeta, // arbitrary object to log with transaction (includes note)
-
-  // ✅ NEW: called after payment is confirmed successful
-  onPaymentSuccess,
-}) {
+const PaymentTerminal = forwardRef(function PaymentTerminal(
+  {
+    amountCents,
+    amountLabel,
+    currency = 'usd',
+    theme,
+    debugMeta,
+    onPaymentSuccess,
+  },
+  ref,
+) {
   const terminal = useStripeTerminal();
 
   const {
@@ -259,9 +239,6 @@ export default function PaymentTerminal({
     collectPaymentMethod,
     retrievePaymentIntent,
     confirmPaymentIntent,
-
-    collectRefundPaymentMethod,
-    confirmRefund,
   } = terminal;
 
   const [loading, setLoading] = useState(false);
@@ -269,17 +246,10 @@ export default function PaymentTerminal({
   const CREATE_INTENT_URL =
     'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
-  // If you don't have it yet, keep this set to null; the refund button will show a helpful message.
-  const CREATE_REFUND_URL = null;
-
   const t = useMemo(
     () => ({
-      primary: theme?.primary ?? '#facc15',
-      primaryText: theme?.primaryText ?? '#020617',
       text: theme?.text ?? '#ffffff',
       muted: theme?.muted ?? '#9ca3af',
-      disabledBg: theme?.disabledBg ?? '#374151',
-      disabledText: theme?.disabledText ?? '#9ca3af',
       danger: theme?.danger ?? '#ef4444',
     }),
     [theme],
@@ -306,48 +276,27 @@ export default function PaymentTerminal({
     return null;
   }
 
-  function resolveRefundFromApi(payload) {
-    if (!payload) return null;
-
-    if (payload.refund && typeof payload.refund === 'object')
-      return payload.refund;
-
-    if (typeof payload.body === 'string') {
-      try {
-        const inner = JSON.parse(payload.body);
-        if (inner?.refund && typeof inner.refund === 'object')
-          return inner.refund;
-        return inner || null;
-      } catch (e) {
-        console.log('resolveRefundFromApi: parse error', e);
-      }
-    }
-
-    if (payload.body && typeof payload.body === 'object') {
-      if (payload.body.refund && typeof payload.body.refund === 'object')
-        return payload.body.refund;
-      return payload.body;
-    }
-
-    return null;
-  }
-
-  const handleCharge = async () => {
+  const startCardPayment = async () => {
     try {
+      if (loading) return;
+
       if (!connectedReader) {
         Alert.alert('No reader connected', 'Connect Tap to Pay first.');
         return;
       }
 
       if (!Number.isFinite(amountCents) || amountCents <= 0) {
-        Alert.alert('Invalid total', 'Total must be greater than $0.00');
+        Alert.alert(
+          'Enter amount',
+          'Please enter an amount greater than $0.00.',
+        );
         return;
       }
 
       setLoading(true);
 
-      console.log('================ AGPAY CHARGE START ================');
-      pretty('CHARGE INPUT:', {amountCents, amountLabel, currency, debugMeta});
+      console.log('================ AGPAY CARD START ================');
+      pretty('CARD INPUT:', {amountCents, amountLabel, currency, debugMeta});
 
       const selection = await readAgpaySelection();
       const description = buildDescription({selection, debugMeta, amountLabel});
@@ -361,7 +310,6 @@ export default function PaymentTerminal({
         note: debugMeta?.note || '',
       };
 
-      // 1) Create PaymentIntent via backend
       const createPayload = {
         amount: amountCents,
         currency,
@@ -398,8 +346,6 @@ export default function PaymentTerminal({
         console.log('Create-intent JSON parse error:', e);
       }
 
-      pretty('Create-intent parsed:', piData);
-
       const clientSecret = resolveClientSecretFromApi(piData);
       console.log('Resolved clientSecret:', clientSecret);
 
@@ -408,7 +354,7 @@ export default function PaymentTerminal({
         return;
       }
 
-      // 2) Retrieve PI on device
+      // Retrieve PI
       const {paymentIntent: retrievedPI, error: retrieveError} =
         await retrievePaymentIntent(clientSecret);
 
@@ -427,7 +373,7 @@ export default function PaymentTerminal({
         return;
       }
 
-      // 3) Collect payment method
+      // Collect
       Alert.alert('Ready', 'Tap a card on the phone to collect payment.');
 
       const {paymentIntent: collectedPI, error: collectError} =
@@ -445,7 +391,7 @@ export default function PaymentTerminal({
         return;
       }
 
-      // 4) Confirm PI
+      // Confirm
       const {paymentIntent: confirmedPI, error: confirmError} =
         await confirmPaymentIntent({paymentIntent: collectedPI});
 
@@ -456,16 +402,14 @@ export default function PaymentTerminal({
         paymentIntent: summarizePI(confirmedPI),
       });
 
-      console.log('================ AGPAY CHARGE END ==================');
+      console.log('================ AGPAY CARD END ==================');
 
       if (confirmError) {
         Alert.alert('Confirm failed', confirmError.message || 'Confirm failed');
         return;
       }
 
-      // -------------------------------------------------------------------
-      // FINAL TX OBJECT + SAVE TO KEYCHAIN + SAVE TO BACKEND
-      // -------------------------------------------------------------------
+      // Build + save transaction
       let receiptPayload = null;
 
       try {
@@ -476,7 +420,6 @@ export default function PaymentTerminal({
 
         const chargeId = charge0?.id || confirmedPI?.charge?.id || null;
 
-        // These may or may not exist depending on SDK object shape.
         const brand =
           charge0?.payment_method_details?.card_present?.brand ||
           charge0?.payment_method_details?.card?.brand ||
@@ -506,13 +449,10 @@ export default function PaymentTerminal({
           },
 
           stripeReturnedObject: stripeReturnedObject || null,
-
           amountLabel: amountLabel || null,
           debugMeta: debugMeta || null,
-
           descriptionSentToStripe: description || null,
           metadataSentToStripe: metadata || null,
-
           clientEpochMs: Date.now(),
         };
 
@@ -530,12 +470,10 @@ export default function PaymentTerminal({
         });
 
         const saveResult = await saveTxToBackend(finalTx);
-
         if (saveResult?.ok && saveResult?.saved?.txnKey) {
           console.log('✅ Saved txnKey:', saveResult.saved.txnKey);
         }
 
-        // ✅ Receipt payload for the next screen
         receiptPayload = {
           amountText: amountLabel || null,
           amountCents: amountCents || null,
@@ -548,268 +486,71 @@ export default function PaymentTerminal({
           corporateName: selection?.corporateName || '',
           storeName: selection?.storeName || '',
           createdAtText: new Date().toLocaleString(),
+          paymentMethod: 'CARD',
         };
       } catch (e) {
         console.log('Final TX print/save error:', e);
       }
 
-      Alert.alert('Success', `Payment completed: ${amountLabel || ''}`);
+      Alert.alert('Success', `Card payment completed: ${amountLabel || ''}`);
 
-      // ✅ IMPORTANT: trigger navigation AFTER success alert is queued
-      // Parent (App.js) will route to receipt + reset terminal to 0.00
       if (typeof onPaymentSuccess === 'function') {
         onPaymentSuccess(receiptPayload || {amountText: amountLabel || null});
       }
     } catch (err) {
-      console.log('handleCharge unexpected error:', err);
+      console.log('startCardPayment unexpected error:', err);
       Alert.alert('Error', String(err?.message || err));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRefundLast = async () => {
-    try {
-      if (!connectedReader) {
-        Alert.alert('No reader connected', 'Connect Tap to Pay first.');
-        return;
-      }
+  useImperativeHandle(ref, () => ({
+    startCardPayment,
+    isBusy: () => loading,
+  }));
 
-      const last = await readLastTx();
-      console.log('REFUND lastTx =>', last);
-
-      if (!last?.chargeId && !last?.paymentIntentId) {
-        Alert.alert(
-          'No saved transaction',
-          'No last transaction found to refund yet. Complete a payment first.',
-        );
-        return;
-      }
-
-      if (
-        typeof collectRefundPaymentMethod !== 'function' ||
-        typeof confirmRefund !== 'function'
-      ) {
-        Alert.alert(
-          'Refund not available in SDK',
-          'Your installed @stripe/stripe-terminal-react-native version does not expose refund methods.',
-        );
-        return;
-      }
-
-      if (!CREATE_REFUND_URL) {
-        Alert.alert(
-          'Refund endpoint not set',
-          'Set CREATE_REFUND_URL in PaymentTerminal.js to your backend refund-create endpoint.',
-        );
-        return;
-      }
-
-      const refundAmount = last?.amount;
-      const refundCurrency = last?.currency || currency;
-      const chargeId = last?.chargeId;
-
-      if (!chargeId) {
-        Alert.alert(
-          'Missing chargeId',
-          'Your saved last transaction does not include a chargeId.',
-        );
-        return;
-      }
-
-      Alert.alert(
-        'Refund',
-        `Refund last payment in full?\n\nAmount: ${refundAmount} ${String(
-          refundCurrency,
-        ).toUpperCase()}`,
-        [
-          {text: 'Cancel', style: 'cancel'},
-          {
-            text: 'Refund',
-            style: 'destructive',
-            onPress: async () => {
-              setLoading(true);
-
-              console.log(
-                '================ AGPAY REFUND START ================',
-              );
-              pretty('REFUND INPUT:', {
-                chargeId,
-                amount: refundAmount,
-                currency: refundCurrency,
-              });
-
-              const refundResp = await fetch(CREATE_REFUND_URL, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                  chargeId,
-                  amount: refundAmount,
-                  currency: refundCurrency,
-                }),
-              });
-
-              const refundRaw = await refundResp.text();
-              console.log('Create-refund HTTP status:', refundResp.status);
-
-              try {
-                pretty(
-                  'Create-refund raw response JSON:',
-                  JSON.parse(refundRaw),
-                );
-              } catch {
-                console.log('Create-refund raw response text:', refundRaw);
-              }
-
-              if (!refundResp.ok) {
-                Alert.alert(
-                  'Refund create failed',
-                  `HTTP ${refundResp.status}. Check logs.`,
-                );
-                setLoading(false);
-                return;
-              }
-
-              let refundPayload = null;
-              try {
-                refundPayload = refundRaw ? JSON.parse(refundRaw) : null;
-              } catch (e) {
-                console.log('Create-refund JSON parse error:', e);
-              }
-
-              pretty('Create-refund parsed:', refundPayload);
-
-              const refund = resolveRefundFromApi(refundPayload);
-
-              if (!refund) {
-                Alert.alert(
-                  'Refund error',
-                  'Backend did not return a refund object.',
-                );
-                setLoading(false);
-                return;
-              }
-
-              Alert.alert('Ready', 'Tap the card on the phone to refund.');
-
-              const {refund: collectedRefund, error: collectErr} =
-                await collectRefundPaymentMethod({refund});
-
-              pretty('collectRefundPaymentMethod:', {
-                error: collectErr
-                  ? {code: collectErr.code, message: collectErr.message}
-                  : null,
-                refund: collectedRefund || null,
-              });
-
-              if (collectErr) {
-                Alert.alert(
-                  'Refund collect failed',
-                  collectErr.message || 'Refund collect failed',
-                );
-                setLoading(false);
-                return;
-              }
-
-              const {refund: confirmedRefund, error: confirmErr} =
-                await confirmRefund({refund: collectedRefund});
-
-              pretty('confirmRefund:', {
-                error: confirmErr
-                  ? {code: confirmErr.code, message: confirmErr.message}
-                  : null,
-                refund: confirmedRefund || null,
-              });
-
-              console.log(
-                '================ AGPAY REFUND END ==================',
-              );
-
-              if (confirmErr) {
-                Alert.alert(
-                  'Refund confirm failed',
-                  confirmErr.message || 'Refund confirm failed',
-                );
-                setLoading(false);
-                return;
-              }
-
-              Alert.alert('Refund Success', 'Refund completed successfully.');
-              setLoading(false);
-            },
-          },
-        ],
-        {cancelable: true},
-      );
-    } catch (e) {
-      console.log('handleRefundLast error:', e);
-      Alert.alert('Refund error', String(e?.message || e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const disabled = !connectedReader || loading;
-
+  // Minimal UI: only show spinner + reader reminder
   return (
     <View style={styles.container}>
-      <Text style={[styles.total, {color: t.text}]}>
-        Total: <Text style={{color: t.primary}}>{amountLabel || '$0.00'}</Text>
-      </Text>
-
-      {/* CHARGE */}
-      <TouchableOpacity
-        onPress={handleCharge}
-        disabled={disabled}
-        style={[
-          styles.btn,
-          {backgroundColor: disabled ? t.disabledBg : t.primary},
-        ]}>
-        {loading ? (
+      {loading ? (
+        <View style={styles.loadingRow}>
           <ActivityIndicator size="small" />
-        ) : (
-          <Text
-            style={[
-              styles.btnText,
-              {color: disabled ? t.disabledText : t.primaryText},
-            ]}>
-            Charge
+          <Text style={[styles.loadingText, {color: t.text}]}>
+            Processing card payment…
           </Text>
-        )}
-      </TouchableOpacity>
+        </View>
+      ) : null}
 
       {!connectedReader && (
         <Text style={[styles.helper, {color: t.muted}]}>
-          Connect Tap to Pay before charging or refunding.
+          Connect Tap to Pay before taking card payments.
         </Text>
       )}
     </View>
   );
-}
+});
+
+export default PaymentTerminal;
 
 const styles = StyleSheet.create({
   container: {
-    marginTop: 12,
-  },
-  total: {
-    textAlign: 'center',
-    fontSize: 14,
-    fontWeight: '900',
-    marginBottom: 10,
-  },
-  btn: {
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  btnText: {
-    fontSize: 14,
-    fontWeight: '900',
+    marginTop: 10,
   },
   helper: {
     marginTop: 8,
     fontSize: 12,
     textAlign: 'center',
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  loadingText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
 });
