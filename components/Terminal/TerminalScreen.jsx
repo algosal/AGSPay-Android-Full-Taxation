@@ -21,7 +21,10 @@ import * as Keychain from 'react-native-keychain';
 import terminalStyles, {AG} from './terminal.styles';
 import {AGPAY_CONFIG} from './agpay.config';
 
-const FORCE_SIMULATED_READER = true;
+// ✅ LIVE MODE: set this to false
+const FORCE_SIMULATED_READER = false;
+
+// ✅ Your LIVE Location ID (must be a LIVE Terminal Location in Stripe Dashboard)
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
 async function requestLocationPermissionIfNeeded() {
@@ -82,8 +85,9 @@ export default function TerminalScreen({
     supportsReadersOfType,
     setSimulatedCard,
   } = useStripeTerminal({
-    onUpdateDiscoveredReaders: readers =>
-      console.log('onUpdateDiscoveredReaders:', readers),
+    onUpdateDiscoveredReaders: readers => {
+      console.log('onUpdateDiscoveredReaders:', readers);
+    },
   });
 
   const [initialized, setInitialized] = useState(false);
@@ -99,6 +103,8 @@ export default function TerminalScreen({
     console.log(
       '✅ RUNNING TerminalScreen: components/Terminal/TerminalScreen.jsx',
     );
+    console.log('FORCE_SIMULATED_READER:', FORCE_SIMULATED_READER);
+    console.log('LIVE_LOCATION_ID:', LIVE_LOCATION_ID);
   }, []);
 
   useEffect(() => {
@@ -124,6 +130,7 @@ export default function TerminalScreen({
 
   useEffect(() => {
     if (!initialized) return;
+
     supportsReadersOfType({deviceType: 'tapToPay', discoveryMethod: 'tapToPay'})
       .then(r => setTapToPaySupported(r?.supported ?? null))
       .catch(e => {
@@ -133,8 +140,9 @@ export default function TerminalScreen({
   }, [initialized, supportsReadersOfType]);
 
   useEffect(() => {
-    if (Array.isArray(discoveredReaders))
+    if (Array.isArray(discoveredReaders)) {
       latestReadersRef.current = discoveredReaders;
+    }
   }, [discoveredReaders]);
 
   const calc = useMemo(() => {
@@ -185,6 +193,16 @@ export default function TerminalScreen({
   const handleConnectTapToPay = async () => {
     if (!initialized) return;
 
+    if (!USE_SIMULATED_READER) {
+      if (!LIVE_LOCATION_ID || LIVE_LOCATION_ID === 'tml_simulated') {
+        Alert.alert(
+          'Live Location missing',
+          'Set LIVE_LOCATION_ID to your real LIVE Terminal Location (tml_...).',
+        );
+        return;
+      }
+    }
+
     const ok = await requestLocationPermissionIfNeeded();
     if (!ok) return;
 
@@ -196,44 +214,80 @@ export default function TerminalScreen({
     setConnecting(true);
 
     try {
+      console.log(
+        '🔎 discoverReaders tapToPay simulated =',
+        USE_SIMULATED_READER,
+      );
+
       const {error} = await discoverReaders({
         discoveryMethod: 'tapToPay',
         simulated: USE_SIMULATED_READER,
       });
 
       if (error) {
+        console.log('discoverReaders error:', error);
         Alert.alert('Discover error', error.message);
         return;
       }
 
-      const reader = latestReadersRef.current[0];
-      if (!reader) {
+      const readers = latestReadersRef.current || [];
+      console.log('✅ latestReadersRef.current:', readers);
+
+      // Extra safety: never connect to a simulated reader in live mode
+      const chosen = USE_SIMULATED_READER
+        ? readers[0]
+        : readers.find(r => !r?.simulated) || readers[0];
+
+      if (!chosen) {
         Alert.alert('No reader found');
         return;
       }
 
+      console.log('➡️ chosen reader:', chosen);
+      console.log(
+        '➡️ chosen.simulated:',
+        chosen?.simulated,
+        'chosen.locationId:',
+        chosen?.locationId,
+        'chosen.location?.livemode:',
+        chosen?.location?.livemode,
+      );
+
+      if (!USE_SIMULATED_READER && chosen?.simulated) {
+        Alert.alert(
+          'Still simulated',
+          'The SDK is still returning only simulated readers. This is almost always a Stripe/Terminal configuration issue (live Location / Tap to Pay enablement), not checkout code.',
+        );
+        return;
+      }
+
       const locationIdToUse = USE_SIMULATED_READER
-        ? reader.locationId
+        ? chosen.locationId
         : LIVE_LOCATION_ID;
 
+      console.log('➡️ connectReader locationIdToUse:', locationIdToUse);
+
       const {error: connectErr} = await connectReader(
-        {reader, locationId: locationIdToUse},
+        {reader: chosen, locationId: locationIdToUse},
         'tapToPay',
       );
 
       if (connectErr) {
+        console.log('connectReader error:', connectErr);
         Alert.alert('Connect error', connectErr.message);
         return;
       }
 
       console.log('✅ Reader connected');
 
+      // Only set simulated card when simulating
       if (USE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
         await setSimulatedCard({number: '4242424242424242', type: 'credit'});
         console.log('✅ Simulated CREDIT card set (no PIN)');
       }
     } catch (e) {
       console.log('handleConnectTapToPay error:', e);
+      Alert.alert('Error', String(e?.message || e));
     } finally {
       setConnecting(false);
     }
