@@ -1,113 +1,187 @@
-import React, {useEffect, useRef} from 'react';
-import {View, Text, Alert, ScrollView} from 'react-native';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
 
 import terminalStyles, {AG} from '../Terminal/terminal.styles';
-import PaymentTerminal from '../PaymentTerminal.js';
+import PaymentTerminal from '../PaymentTerminal';
 
-function dollarsFromCents(cents) {
-  const n = Number(cents || 0);
+function dollarsFromCents(c) {
+  const n = Number(c || 0);
   return (n / 100).toFixed(2);
 }
 
 export default function CheckoutScreen({
-  // REQUIRED
-  method, // 'CARD' | 'CASH'
-  baseAmountCents,
-  tipCents,
+  method, // 'CASH' | 'CARD'
   currency = 'usd',
   paymentNote,
-
-  // optional display
   corporateName,
   storeName,
 
-  // callbacks
-  onPaid, // receipt payload -> App routes to receipt
-  onBack, // optional back to tip
+  // expected inputs from tip screen
+  baseAmountCents, // SUBTOTAL
+  tipCents,
+
+  grandTotalCents, // optional legacy
+  grandTotalLabel, // optional legacy
+
+  onPaid,
+  onBack,
+  onLogout,
 }) {
   const s = terminalStyles;
-  const terminalRef = useRef(null);
+  const paymentRef = useRef(null);
 
-  const base = Number(baseAmountCents || 0);
-  const tip = Number(tipCents || 0);
-  const grandTotalCents = base + tip;
-  const grandTotalLabel = `$${dollarsFromCents(grandTotalCents)}`;
+  const [starting, setStarting] = useState(false);
+  const [didStart, setDidStart] = useState(false);
 
-  // Auto-run checkout on mount
+  // If you still pass grandTotalCents, we trust it; otherwise compute from base+tip only.
+  // (Your fee/tax logic lives elsewhere; the important part is: breakdown passed through.)
+  const totalCents = Number(
+    grandTotalCents ?? Number(baseAmountCents || 0) + Number(tipCents || 0),
+  );
+  const totalLabel = grandTotalLabel || `$${dollarsFromCents(totalCents)}`;
+
+  const breakdown = useMemo(() => {
+    return {
+      subtotalCents: Number(baseAmountCents || 0),
+      tipCents: Number(tipCents || 0),
+
+      // If you have these available in props, pass them too:
+      taxCents: Number(0),
+      albaFeeCents: Number(0),
+      stripeFeeCents: Number(0),
+
+      totalCents: totalCents,
+      totalLabel: totalLabel,
+    };
+  }, [baseAmountCents, tipCents, totalCents, totalLabel]);
+
+  // CASH
   useEffect(() => {
-    if (!method) {
-      Alert.alert('Missing method', 'No payment method was selected.');
-      return;
-    }
+    if (didStart) return;
+    if (String(method || '').toUpperCase() !== 'CASH') return;
 
-    if (grandTotalCents <= 0) {
-      Alert.alert('Invalid total', 'Total must be greater than $0.00.');
-      return;
-    }
+    setDidStart(true);
 
-    if (method === 'CASH') {
-      Alert.alert(
-        'Cash payment',
-        `Confirm cash payment for:\n\nGrand total: ${grandTotalLabel}`,
-        [
-          {text: 'Cancel', style: 'cancel', onPress: () => onBack?.()},
-          {
-            text: 'Confirm',
-            style: 'default',
-            onPress: () => {
-              const receiptPayload = {
-                amountText: grandTotalLabel,
-                amountCents: grandTotalCents,
-                currency,
-                paymentNote: paymentNote || '',
-                tipCents: tip,
-                createdAtText: new Date().toLocaleString(),
-                paymentId: `cash_${Date.now()}`,
-                chargeId: null,
-                brand: 'CASH',
-                last4: null,
-                paymentMethod: 'CASH',
-                corporateName: corporateName || '',
-                storeName: storeName || '',
-              };
+    const receiptPayload = {
+      amountText: totalLabel,
+      amountCents: totalCents,
+      currency,
+      brand: null,
+      last4: null,
+      paymentId: null,
+      chargeId: null,
+      note: paymentNote || '',
+      corporateName: corporateName || '',
+      storeName: storeName || '',
+      createdAtText: new Date().toLocaleString(),
+      paymentMethod: 'CASH',
 
-              if (typeof onPaid === 'function') onPaid(receiptPayload);
-            },
-          },
-        ],
-        {cancelable: true},
-      );
+      // breakdown fields for printing
+      subtotalCents: breakdown.subtotalCents,
+      tipCents: breakdown.tipCents,
+      taxCents: breakdown.taxCents,
+      albaFeeCents: breakdown.albaFeeCents,
+      stripeFeeCents: breakdown.stripeFeeCents,
+      totalCents: breakdown.totalCents,
+    };
 
-      return;
-    }
-
-    // CARD auto-start
-    const t = setTimeout(() => {
-      terminalRef.current?.startCardPayment?.();
-    }, 250);
-
-    return () => clearTimeout(t);
+    onPaid?.(receiptPayload);
   }, [
+    didStart,
     method,
-    grandTotalCents,
-    grandTotalLabel,
+    totalLabel,
+    totalCents,
     currency,
     paymentNote,
-    tip,
     corporateName,
     storeName,
     onPaid,
-    onBack,
+    breakdown,
   ]);
 
-  const handleCardSuccess = receiptFromPaymentTerminal => {
-    if (typeof onPaid === 'function') onPaid(receiptFromPaymentTerminal);
+  // CARD
+  useEffect(() => {
+    if (didStart) return;
+    if (String(method || '').toUpperCase() !== 'CARD') return;
+
+    if (!Number.isFinite(totalCents) || totalCents <= 0) {
+      Alert.alert('Invalid total', 'Total must be > $0.00');
+      return;
+    }
+
+    setDidStart(true);
+    setStarting(true);
+
+    setTimeout(() => {
+      try {
+        paymentRef.current?.startCardPayment?.();
+      } catch (e) {
+        console.log('startCardPayment call error:', e);
+        Alert.alert('Error', String(e?.message || e));
+      } finally {
+        setStarting(false);
+      }
+    }, 200);
+  }, [didStart, method, totalCents]);
+
+  const handlePaymentSuccess = receiptPayload => {
+    const merged = {
+      ...receiptPayload,
+
+      // harden totals
+      amountText: receiptPayload?.amountText || totalLabel,
+      amountCents: Number(receiptPayload?.amountCents || totalCents),
+      totalCents: Number(receiptPayload?.totalCents || totalCents),
+
+      corporateName: receiptPayload?.corporateName || corporateName || '',
+      storeName: receiptPayload?.storeName || storeName || '',
+      note: receiptPayload?.note ?? paymentNote ?? '',
+
+      // ensure breakdown exists for print even if PaymentTerminal didn't supply (it does now)
+      subtotalCents: Number(
+        receiptPayload?.subtotalCents ?? breakdown.subtotalCents ?? 0,
+      ),
+      taxCents: Number(receiptPayload?.taxCents ?? breakdown.taxCents ?? 0),
+      albaFeeCents: Number(
+        receiptPayload?.albaFeeCents ?? breakdown.albaFeeCents ?? 0,
+      ),
+      stripeFeeCents: Number(
+        receiptPayload?.stripeFeeCents ?? breakdown.stripeFeeCents ?? 0,
+      ),
+      tipCents: Number(receiptPayload?.tipCents ?? breakdown.tipCents ?? 0),
+    };
+
+    onPaid?.(merged);
   };
 
   return (
-    <ScrollView style={s.screen} contentContainerStyle={s.content}>
+    <View style={[s.screen, {padding: 16}]}>
+      <View style={s.headerRow}>
+        <Text style={[s.title, {fontSize: 22}]}>
+          <Text style={{color: AG.gold}}>AG</Text>
+          <Text style={{color: AG.text}}>Pay · Checkout</Text>
+        </Text>
+
+        <View style={{flexDirection: 'row', gap: 10}}>
+          {typeof onBack === 'function' && (
+            <TouchableOpacity onPress={onBack} style={s.logoutBtn}>
+              <Text style={s.logoutIcon}>←</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
+            <Text style={s.logoutIcon}>⎋</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <View style={s.card}>
-        <Text style={[s.cardTitle, {fontSize: 18}]}>Checkout</Text>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>Order Summary</Text>
 
         {!!corporateName && (
           <Text style={[s.statusText, {fontSize: 14}]}>{corporateName}</Text>
@@ -121,57 +195,58 @@ export default function CheckoutScreen({
           </Text>
         )}
 
-        <View style={[s.row, {marginTop: 12}]}>
-          <Text style={[s.rowLabel, {fontSize: 14}]}>Base</Text>
-          <Text style={[s.rowValue, {fontSize: 14}]}>
-            ${dollarsFromCents(base)}
-          </Text>
-        </View>
-
-        <View style={s.row}>
-          <Text style={[s.rowLabel, {fontSize: 14}]}>Tip</Text>
-          <Text style={[s.rowValue, {fontSize: 14}]}>
-            ${dollarsFromCents(tip)}
-          </Text>
-        </View>
-
         <View style={[s.row, {marginTop: 10, alignItems: 'flex-end'}]}>
           <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
             Total
           </Text>
           <Text style={[s.rowValueGold, {fontSize: 30, fontWeight: '900'}]}>
-            {grandTotalLabel}
+            {totalLabel}
           </Text>
         </View>
-
-        <Text style={[s.statusText, {marginTop: 10, fontSize: 12}]}>
-          Method: {method === 'CARD' ? 'Card (Tap to Pay)' : 'Cash'}
-        </Text>
       </View>
 
-      {/* CARD flow runner */}
-      {method === 'CARD' ? (
-        <View style={s.card}>
-          <Text style={[s.cardTitle, {fontSize: 18}]}>Card Payment</Text>
-          <Text style={[s.statusText, {fontSize: 12}]}>
-            Tap a card on the phone to pay.
-          </Text>
+      <View style={s.card}>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>Payment</Text>
 
-          <PaymentTerminal
-            ref={terminalRef}
-            amountCents={grandTotalCents}
-            amountLabel={grandTotalLabel}
-            currency={currency}
-            debugMeta={{
-              tipCents: tip,
-              note: paymentNote || '',
-              from: 'CheckoutScreen',
-            }}
-            theme={{text: AG.text, muted: AG.muted, danger: AG.danger}}
-            onPaymentSuccess={handleCardSuccess}
-          />
-        </View>
-      ) : null}
-    </ScrollView>
+        <Text style={[s.statusText, {fontSize: 14}]}>
+          Method: {String(method || '').toUpperCase()}
+        </Text>
+
+        {String(method || '').toUpperCase() === 'CARD' && (
+          <>
+            {starting && (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  marginTop: 10,
+                }}>
+                <ActivityIndicator size="small" />
+                <Text style={[s.statusText, {fontSize: 14}]}>
+                  Starting card payment…
+                </Text>
+              </View>
+            )}
+
+            <PaymentTerminal
+              ref={paymentRef}
+              amountCents={totalCents}
+              amountLabel={totalLabel}
+              currency={currency}
+              debugMeta={{note: paymentNote || ''}}
+              breakdown={breakdown}
+              onPaymentSuccess={handlePaymentSuccess}
+            />
+          </>
+        )}
+
+        {String(method || '').toUpperCase() === 'CASH' && (
+          <Text style={[s.statusText, {fontSize: 14, marginTop: 10}]}>
+            Cash marked as paid.
+          </Text>
+        )}
+      </View>
+    </View>
   );
 }

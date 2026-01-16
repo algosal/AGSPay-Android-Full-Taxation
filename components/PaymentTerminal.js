@@ -98,6 +98,21 @@ async function saveLastTx(lastTx) {
   }
 }
 
+// ✅ NEW: save last printable receipt (so you can re-print without charging)
+async function saveLastReceipt(receiptPayload) {
+  try {
+    if (!receiptPayload) return;
+    await Keychain.setInternetCredentials(
+      'agpayLastReceipt',
+      'receipt',
+      JSON.stringify(receiptPayload),
+    );
+    console.log('✅ Saved agpayLastReceipt');
+  } catch (e) {
+    console.log('saveLastReceipt error:', e);
+  }
+}
+
 // -----------------------------
 // AUTH TOKEN (JWT) HELPERS
 // -----------------------------
@@ -217,9 +232,7 @@ function buildDescription({selection, debugMeta, amountLabel}) {
 }
 
 // -----------------------------
-// COMPONENT (NO BUTTON UI)
-// - TerminalScreen owns the "Cash" + "Credit" buttons
-// - TerminalScreen triggers card flow via ref: terminalRef.current.startCardPayment()
+// COMPONENT
 // -----------------------------
 const PaymentTerminal = forwardRef(function PaymentTerminal(
   {
@@ -228,6 +241,7 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
     currency = 'usd',
     theme,
     debugMeta,
+    breakdown, // ✅ IMPORTANT: pass fee breakdown so receipt can print it
     onPaymentSuccess,
   },
   ref,
@@ -474,20 +488,37 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
           console.log('✅ Saved txnKey:', saveResult.saved.txnKey);
         }
 
+        // ✅ Receipt payload includes breakdown so printer can show amounts
         receiptPayload = {
           amountText: amountLabel || null,
           amountCents: amountCents || null,
           currency: currency || null,
+
           paymentId: finalTx?.stripe?.paymentIntentId || null,
           chargeId: finalTx?.stripe?.chargeId || null,
           brand,
           last4,
+
           note: debugMeta?.note || '',
           corporateName: selection?.corporateName || '',
           storeName: selection?.storeName || '',
           createdAtText: new Date().toLocaleString(),
           paymentMethod: 'CARD',
+
+          // ✅ these power the receipt right-column amounts
+          subtotalCents: Number(
+            breakdown?.subtotalCents ?? breakdown?.baseAmountCents ?? 0,
+          ),
+          taxCents: Number(breakdown?.taxCents ?? 0),
+          albaFeeCents: Number(breakdown?.albaFeeCents ?? 0),
+          tipCents: Number(breakdown?.tipCents ?? 0),
+
+          totalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
+          grandTotalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
         };
+
+        // ✅ IMPORTANT: save last receipt so you can re-print without charging again
+        await saveLastReceipt(receiptPayload);
       } catch (e) {
         console.log('Final TX print/save error:', e);
       }
@@ -510,7 +541,6 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
     isBusy: () => loading,
   }));
 
-  // Minimal UI: only show spinner + reader reminder
   return (
     <View style={styles.container}>
       {loading ? (

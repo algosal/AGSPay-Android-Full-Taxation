@@ -159,6 +159,7 @@ export default function TerminalScreen({
     const agFeeSlopeRate = Number(AGPAY_CONFIG.agFeeSlopeRate ?? 0);
 
     const taxCents = Math.round(subtotalCents * taxRate);
+
     const stripeFeeCents =
       Math.round(subtotalCents * stripeFeeRate) + stripeFeeFixedCents;
 
@@ -173,7 +174,15 @@ export default function TerminalScreen({
     const feeCents = stripeFeeCents + agFeeCents;
     const totalCents = subtotalCents + taxCents + feeCents;
 
-    return {subtotalCents, taxRate, taxCents, feeCents, totalCents};
+    return {
+      subtotalCents,
+      taxRate,
+      taxCents,
+      stripeFeeCents,
+      agFeeCents,
+      feeCents,
+      totalCents,
+    };
   }, [subtotalInput]);
 
   const rawAmountEntered = String(subtotalInput ?? '').trim();
@@ -233,7 +242,6 @@ export default function TerminalScreen({
       const readers = latestReadersRef.current || [];
       console.log('✅ latestReadersRef.current:', readers);
 
-      // Extra safety: never connect to a simulated reader in live mode
       const chosen = USE_SIMULATED_READER
         ? readers[0]
         : readers.find(r => !r?.simulated) || readers[0];
@@ -244,19 +252,11 @@ export default function TerminalScreen({
       }
 
       console.log('➡️ chosen reader:', chosen);
-      console.log(
-        '➡️ chosen.simulated:',
-        chosen?.simulated,
-        'chosen.locationId:',
-        chosen?.locationId,
-        'chosen.location?.livemode:',
-        chosen?.location?.livemode,
-      );
 
       if (!USE_SIMULATED_READER && chosen?.simulated) {
         Alert.alert(
           'Still simulated',
-          'The SDK is still returning only simulated readers. This is almost always a Stripe/Terminal configuration issue (live Location / Tap to Pay enablement), not checkout code.',
+          'The SDK is still returning only simulated readers. This is usually a Stripe/Terminal configuration issue (live Location / Tap to Pay enablement).',
         );
         return;
       }
@@ -280,7 +280,6 @@ export default function TerminalScreen({
 
       console.log('✅ Reader connected');
 
-      // Only set simulated card when simulating
       if (USE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
         await setSimulatedCard({number: '4242424242424242', type: 'credit'});
         console.log('✅ Simulated CREDIT card set (no PIN)');
@@ -338,11 +337,19 @@ export default function TerminalScreen({
       return;
     }
 
+    // IMPORTANT: baseAmountCents must be *subtotal*, not total.
+    // Tip screen should add tip, then checkout should add tax/fees based on subtotal.
     onGoToTip({
-      baseAmountCents: calc.totalCents,
-      baseAmountLabel: baseTotalLabel,
+      baseAmountCents: calc.subtotalCents,
+      baseAmountLabel: `$${dollarsFromCents(calc.subtotalCents)}`,
       currency: AGPAY_CONFIG.currency || 'usd',
       paymentNote: paymentNote || '',
+      // pass breakdown forward so Checkout can show/print exact values
+      taxCents: calc.taxCents,
+      stripeFeeCents: calc.stripeFeeCents,
+      agFeeCents: calc.agFeeCents,
+      totalCents: calc.totalCents,
+      totalLabel: baseTotalLabel,
     });
   };
 
@@ -411,7 +418,21 @@ export default function TerminalScreen({
           </View>
 
           <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Fees</Text>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Stripe Fee</Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>
+              ${dollarsFromCents(calc.stripeFeeCents)}
+            </Text>
+          </View>
+
+          <View style={s.row}>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Alba Fee</Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>
+              ${dollarsFromCents(calc.agFeeCents)}
+            </Text>
+          </View>
+
+          <View style={s.row}>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Total Fees</Text>
             <Text style={[s.rowValue, {fontSize: 14}]}>
               ${dollarsFromCents(calc.feeCents)}
             </Text>

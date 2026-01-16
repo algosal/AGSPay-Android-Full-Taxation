@@ -1,18 +1,15 @@
 import React, {useEffect, useState} from 'react';
 import {Alert, View, ActivityIndicator} from 'react-native';
-
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
 
 import Login from './components/Login/Login.jsx';
+import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen.js';
+import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen.js';
 import TerminalScreen from './components/Terminal/TerminalScreen.jsx';
-
-import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen';
-import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen';
-import ReceiptScreen from './components/Receipt/ReceiptScreen';
-
 import TipScreen from './components/Tip/TipScreen.js';
 import CheckoutScreen from './components/Checkout/CheckoutScreen.js';
+import ReceiptScreen from './components/Receipt/ReceiptScreen.js';
 
 const API_BASE =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe';
@@ -25,7 +22,7 @@ async function fetchConnectionToken() {
 
   const data = await response.json();
 
-  if (typeof data.body === 'string') {
+  if (typeof data?.body === 'string') {
     const parsed = JSON.parse(data.body);
     return parsed.secret;
   }
@@ -58,76 +55,55 @@ function isValidSelection(sel) {
 
 async function clearInternetCredential(serverName) {
   try {
-    const res = await Keychain.resetInternetCredentials(serverName);
-    console.log(`resetInternetCredentials(${serverName}) =>`, res);
+    await Keychain.resetInternetCredentials(serverName);
   } catch (e) {
     console.log(`resetInternetCredentials(${serverName}) error:`, e);
   }
 }
 
 export default function App() {
-  const [paymentNote, setPaymentNote] = useState('');
-
   const [booting, setBooting] = useState(true);
   const [authed, setAuthed] = useState(false);
 
   const [selection, setSelection] = useState(null);
-
-  // 'corporate' | 'store' | 'terminal' | 'tip' | 'checkout' | 'receipt'
-  const [step, setStep] = useState('corporate');
-
   const [pickedCorporate, setPickedCorporate] = useState(null);
-  const [terminalResetKey, setTerminalResetKey] = useState(0);
 
+  // terminal -> tip -> checkout -> receipt
+  const [step, setStep] = useState('terminal');
+
+  // payloads between steps
+  const [paymentNote, setPaymentNote] = useState('');
+  const [tipPayload, setTipPayload] = useState(null);
+  const [checkoutPayload, setCheckoutPayload] = useState(null);
   const [receipt, setReceipt] = useState(null);
-
-  // payload from Terminal -> Tip
-  const [tipBase, setTipBase] = useState(null);
-
-  // payload from Tip -> Checkout
-  const [checkout, setCheckout] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
         setBooting(true);
-
         const creds = await Keychain.getGenericPassword();
-        console.log('BOOT Keychain generic =>', creds);
-
         const isAuthed = !!creds;
         setAuthed(isAuthed);
 
         if (!isAuthed) {
-          setSelection(null);
-          setPickedCorporate(null);
-          setReceipt(null);
-          setTipBase(null);
-          setCheckout(null);
-          setStep('corporate');
+          setStep('terminal');
           return;
         }
 
         const sel = await readAgpaySelection();
-        console.log('BOOT agpaySelection =>', sel);
+        const valid = isValidSelection(sel) ? sel : null;
+        setSelection(valid);
 
-        const validSel = isValidSelection(sel) ? sel : null;
-        setSelection(validSel);
-
-        setPickedCorporate(null);
-        setReceipt(null);
-        setTipBase(null);
-        setCheckout(null);
-        setStep(validSel ? 'terminal' : 'corporate');
+        // If no selection, force corporate->store selection
+        if (!valid) {
+          setStep('corporate');
+        } else {
+          setStep('terminal');
+        }
       } catch (e) {
-        console.log('Keychain boot read error:', e);
+        console.log('Boot error:', e);
         setAuthed(false);
-        setSelection(null);
-        setPickedCorporate(null);
-        setReceipt(null);
-        setTipBase(null);
-        setCheckout(null);
-        setStep('corporate');
+        setStep('terminal');
       } finally {
         setBooting(false);
       }
@@ -136,24 +112,22 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      const reset = await Keychain.resetGenericPassword();
-      console.log('Logout resetGenericPassword =>', reset);
-
+      await Keychain.resetGenericPassword();
       await clearInternetCredential('agpayAuth');
       await clearInternetCredential('agpaySelection');
+      await clearInternetCredential('agpayLastTx');
     } catch (e) {
       console.log('Logout error:', e);
       Alert.alert('Logout error', String(e?.message || e));
     } finally {
       setAuthed(false);
-      setPaymentNote('');
       setSelection(null);
       setPickedCorporate(null);
+      setTipPayload(null);
+      setCheckoutPayload(null);
       setReceipt(null);
-      setTipBase(null);
-      setCheckout(null);
-      setStep('corporate');
-      setTerminalResetKey(0);
+      setPaymentNote('');
+      setStep('terminal');
     }
   };
 
@@ -161,124 +135,71 @@ export default function App() {
     setAuthed(true);
 
     const sel = await readAgpaySelection();
-    console.log('POST-LOGIN agpaySelection =>', sel);
+    const valid = isValidSelection(sel) ? sel : null;
+    setSelection(valid);
 
-    const validSel = isValidSelection(sel) ? sel : null;
-    setSelection(validSel);
-
-    setPickedCorporate(null);
-    setReceipt(null);
-    setTipBase(null);
-    setCheckout(null);
-
-    setStep(validSel ? 'terminal' : 'corporate');
+    if (!valid) {
+      setStep('corporate');
+    } else {
+      setStep('terminal');
+    }
   };
 
   const handleCorporatePicked = corp => {
-    if (!corp?.corporateId) {
-      Alert.alert('Select corporate', 'Please choose a corporate to continue.');
-      return;
-    }
     setPickedCorporate(corp);
     setStep('store');
   };
 
-  const handleSelectionCompleted = async () => {
+  const handleStoreSelectionCompleted = async () => {
     const sel = await readAgpaySelection();
-    console.log('SELECTION COMPLETED agpaySelection =>', sel);
-
-    const validSel = isValidSelection(sel) ? sel : null;
-    setSelection(validSel);
-
-    if (validSel) {
-      setPickedCorporate(null);
-      setReceipt(null);
-      setTipBase(null);
-      setCheckout(null);
-      setStep('terminal');
-    } else {
-      Alert.alert('Selection required', 'Please select a store to continue.');
-      setPickedCorporate(null);
-      setReceipt(null);
-      setTipBase(null);
-      setCheckout(null);
+    const valid = isValidSelection(sel) ? sel : null;
+    setSelection(valid);
+    if (!valid) {
+      Alert.alert('Selection error', 'Store selection did not save correctly.');
       setStep('corporate');
+      return;
     }
-  };
-
-  const handleBackToCorporates = () => {
-    setPickedCorporate(null);
-    setStep('corporate');
-  };
-
-  const handleChangeStoreRequested = async () => {
-    console.log('ChangeStore requested => clearing selection + routing');
-
-    await clearInternetCredential('agpaySelection');
-
-    setSelection(null);
-    setPickedCorporate(null);
-    setReceipt(null);
-    setTipBase(null);
-    setCheckout(null);
-    setStep('corporate');
+    setStep('terminal');
   };
 
   // Terminal -> Tip
-  const handleGoToTip = basePayload => {
-    console.log('GO TO TIP => basePayload:', basePayload);
-    setTipBase(basePayload || null);
-    setCheckout(null);
+  const handleGoToTip = payloadFromTerminal => {
+    setTipPayload(payloadFromTerminal);
     setStep('tip');
   };
 
   // Tip -> Checkout
-  const handleTipDone = tipResult => {
-    console.log('TIP DONE =>', tipResult);
+  const handleTipDone = payloadFromTip => {
+    // TipScreen gives us grandTotalCents
+    const baseAmountCents = Number(tipPayload?.baseAmountCents || 0);
 
-    const method = tipResult?.method;
-    if (!method) {
-      Alert.alert('Missing method', 'Please choose Cash or Card.');
-      return;
-    }
-
-    setCheckout({
-      method,
-      baseAmountCents: tipBase?.baseAmountCents || 0,
-      tipCents: tipResult?.tipCents || 0,
-      currency: tipResult?.currency || 'usd',
-      paymentNote: tipBase?.paymentNote || '',
-      corporateName: tipBase?.corporateName || '',
-      storeName: tipBase?.storeName || '',
+    setCheckoutPayload({
+      method: payloadFromTip?.method, // CASH or CARD
+      baseAmountCents,
+      tipCents: Number(payloadFromTip?.tipCents || 0),
+      grandTotalCents: Number(payloadFromTip?.grandTotalCents || 0),
+      grandTotalLabel: payloadFromTip?.grandTotalLabel || '',
+      currency: tipPayload?.currency || payloadFromTip?.currency || 'usd',
+      paymentNote: tipPayload?.paymentNote || paymentNote || '',
+      corporateName: selection?.corporateName || '',
+      storeName: selection?.storeName || '',
     });
 
-    // ✅ go directly to checkout (NOT terminal)
     setStep('checkout');
   };
 
-  const handleTipBack = () => {
-    setTipBase(null);
-    setCheckout(null);
-    setStep('terminal');
-  };
-
   // Checkout -> Receipt
-  const handlePaid = receiptData => {
-    console.log('PAID => receipt:', receiptData);
-
-    setPaymentNote('');
-    setTerminalResetKey(k => k + 1);
-
-    setReceipt(receiptData || {});
-    setTipBase(null);
-    setCheckout(null);
+  const handlePaid = receiptPayload => {
+    console.log('✅ PAID => receipt:', receiptPayload);
+    setReceipt(receiptPayload || {});
     setStep('receipt');
   };
 
   const handleReceiptDone = () => {
     setReceipt(null);
-    setTipBase(null);
-    setCheckout(null);
+    setTipPayload(null);
+    setCheckoutPayload(null);
+    setPaymentNote('');
     setStep('terminal');
   };
 
@@ -292,67 +213,73 @@ export default function App() {
     );
   } else if (!authed) {
     content = <Login onLoginSuccess={handleLoginSuccess} />;
-  } else if (!isValidSelection(selection)) {
-    if (step === 'store') {
-      content = (
-        <StoreSelectScreen
-          onLogout={handleLogout}
-          onBack={handleBackToCorporates}
-          corporate={pickedCorporate}
-          onSelectionCompleted={handleSelectionCompleted}
-        />
-      );
-    } else {
-      content = (
-        <CorporateSelectScreen
-          onLogout={handleLogout}
-          onCorporatePicked={handleCorporatePicked}
-        />
-      );
-    }
+  } else if (step === 'corporate') {
+    content = (
+      <CorporateSelectScreen
+        onCorporatePicked={handleCorporatePicked}
+        onLogout={handleLogout}
+      />
+    );
+  } else if (step === 'store') {
+    content = (
+      <StoreSelectScreen
+        corporate={pickedCorporate}
+        onSelectionCompleted={handleStoreSelectionCompleted}
+        onBack={() => setStep('corporate')}
+        onLogout={handleLogout}
+      />
+    );
   } else if (step === 'tip') {
     content = (
       <TipScreen
-        baseAmountCents={tipBase?.baseAmountCents}
-        baseAmountLabel={tipBase?.baseAmountLabel}
-        currency={tipBase?.currency || 'usd'}
-        paymentNote={tipBase?.paymentNote || ''}
-        corporateName={tipBase?.corporateName || ''}
-        storeName={tipBase?.storeName || ''}
-        onBack={handleTipBack}
+        baseAmountCents={tipPayload?.baseAmountCents}
+        baseAmountLabel={tipPayload?.baseAmountLabel}
+        currency={tipPayload?.currency || 'usd'}
+        paymentNote={tipPayload?.paymentNote || paymentNote || ''}
+        corporateName={selection?.corporateName || ''}
+        storeName={selection?.storeName || ''}
+        onBack={() => setStep('terminal')}
         onDone={handleTipDone}
       />
     );
   } else if (step === 'checkout') {
     content = (
       <CheckoutScreen
-        method={checkout?.method}
-        baseAmountCents={checkout?.baseAmountCents}
-        tipCents={checkout?.tipCents}
-        currency={checkout?.currency || 'usd'}
-        paymentNote={checkout?.paymentNote || ''}
-        corporateName={checkout?.corporateName || ''}
-        storeName={checkout?.storeName || ''}
-        onBack={() => setStep('tip')}
+        method={checkoutPayload?.method}
+        currency={checkoutPayload?.currency || 'usd'}
+        paymentNote={checkoutPayload?.paymentNote || ''}
+        corporateName={checkoutPayload?.corporateName || ''}
+        storeName={checkoutPayload?.storeName || ''}
+        baseAmountCents={checkoutPayload?.baseAmountCents || 0}
+        tipCents={checkoutPayload?.tipCents || 0}
+        grandTotalCents={checkoutPayload?.grandTotalCents || 0}
+        grandTotalLabel={checkoutPayload?.grandTotalLabel || ''}
         onPaid={handlePaid}
+        onBack={() => setStep('tip')}
+        onLogout={handleLogout}
       />
     );
   } else if (step === 'receipt') {
     content = (
       <ReceiptScreen
         receipt={receipt}
+        onBack={() => setStep('checkout')}
         onDone={handleReceiptDone}
         onLogout={handleLogout}
       />
     );
   } else {
+    // terminal
     content = (
       <TerminalScreen
-        key={`terminal-${terminalResetKey}`}
         paymentNote={paymentNote}
         setPaymentNote={setPaymentNote}
         onLogout={handleLogout}
-        onChangeStoreRequested={handleChangeStoreRequested}
+        onChangeStoreRequested={() => {
+          setPickedCorporate(null);
+          setSelection(null);
+          setStep('corporate');
+        }}
         onGoToTip={handleGoToTip}
       />
     );
@@ -360,6 +287,7 @@ export default function App() {
 
   return (
     <StripeTerminalProvider
+      publishableKey="pk_live_51SYsEQAdvMmqiwUl8MKhSBczlEIyFG2OQNPrkgIWlndxLdj2DoSab31Pl1DTK85Pws5RCJnFcusnCeNV6Vwn8oo9005E23RB8T"
       tokenProvider={fetchConnectionToken}
       logLevel="verbose">
       {content}
