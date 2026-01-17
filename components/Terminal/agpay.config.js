@@ -9,8 +9,6 @@ export const AGPAY_CONFIG = {
 
   // AGPay service fee (smooth ramp: 5¢ → $1.00 at $100, then cap)
   agFeeMinCents: 5,
-  // agFeeMaxCents: 100,
-  // agFeeSlopeRate: 0.0095,
 
   agFeeMaxCents: 50,
   agFeeSlopeRate: 0.0045, // (50 - 5) / 10000

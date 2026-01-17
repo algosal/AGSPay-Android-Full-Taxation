@@ -24,7 +24,7 @@ import {AGPAY_CONFIG} from './agpay.config';
 // ✅ LIVE MODE: set this to false
 const FORCE_SIMULATED_READER = false;
 
-// ✅ Your LIVE Location ID (must be a LIVE Terminal Location in Stripe Dashboard)
+// ✅ Your LIVE Location ID
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
 async function requestLocationPermissionIfNeeded() {
@@ -65,12 +65,16 @@ async function clearAgpaySelection() {
   }
 }
 
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+
 export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
   onLogout,
   onChangeStoreRequested,
-  onGoToTip, // ✅ required
+  onGoToTip,
 }) {
   const s = terminalStyles;
 
@@ -145,9 +149,10 @@ export default function TerminalScreen({
     }
   }, [discoveredReaders]);
 
+  // ✅ Compute tax + alba fee from SUBTOTAL
   const calc = useMemo(() => {
-    const subtotal = parseMoney(subtotalInput);
-    const subtotalCents = centsFromDollars(subtotal);
+    const subtotalDollars = parseMoney(subtotalInput);
+    const subtotalCents = centsFromDollars(subtotalDollars);
 
     const taxRate = Number(AGPAY_CONFIG.taxRate || 0);
 
@@ -166,13 +171,11 @@ export default function TerminalScreen({
     const agFeeBase = Math.round(
       agFeeMinCents + subtotalCents * agFeeSlopeRate,
     );
-    const agFeeCents = Math.min(
-      agFeeMaxCents,
-      Math.max(agFeeMinCents, agFeeBase),
-    );
+    const agFeeCents = clamp(agFeeBase, agFeeMinCents, agFeeMaxCents);
 
-    const feeCents = stripeFeeCents + agFeeCents;
-    const totalCents = subtotalCents + taxCents + feeCents;
+    const albaFeeCents = stripeFeeCents + agFeeCents;
+
+    const baseTotalCents = subtotalCents + taxCents + albaFeeCents;
 
     return {
       subtotalCents,
@@ -180,8 +183,8 @@ export default function TerminalScreen({
       taxCents,
       stripeFeeCents,
       agFeeCents,
-      feeCents,
-      totalCents,
+      albaFeeCents,
+      baseTotalCents,
     };
   }, [subtotalInput]);
 
@@ -196,7 +199,7 @@ export default function TerminalScreen({
       ? '✅ Supported'
       : '❌ Not supported';
 
-  const baseTotalLabel = `$${dollarsFromCents(calc.totalCents)}`;
+  const baseTotalLabel = `$${dollarsFromCents(calc.baseTotalCents)}`;
   const connectDisabled = connecting || !initialized;
 
   const handleConnectTapToPay = async () => {
@@ -251,12 +254,10 @@ export default function TerminalScreen({
         return;
       }
 
-      console.log('➡️ chosen reader:', chosen);
-
       if (!USE_SIMULATED_READER && chosen?.simulated) {
         Alert.alert(
           'Still simulated',
-          'The SDK is still returning only simulated readers. This is usually a Stripe/Terminal configuration issue (live Location / Tap to Pay enablement).',
+          'The SDK is still returning only simulated readers.',
         );
         return;
       }
@@ -264,8 +265,6 @@ export default function TerminalScreen({
       const locationIdToUse = USE_SIMULATED_READER
         ? chosen.locationId
         : LIVE_LOCATION_ID;
-
-      console.log('➡️ connectReader locationIdToUse:', locationIdToUse);
 
       const {error: connectErr} = await connectReader(
         {reader: chosen, locationId: locationIdToUse},
@@ -322,6 +321,7 @@ export default function TerminalScreen({
     );
   };
 
+  // ✅ Go to tip with FULL breakdown (tip added after)
   const handleGoTip = async () => {
     const raw = String(subtotalInput ?? '').trim();
     const subtotal = parseMoney(subtotalInput);
@@ -337,19 +337,18 @@ export default function TerminalScreen({
       return;
     }
 
-    // IMPORTANT: baseAmountCents must be *subtotal*, not total.
-    // Tip screen should add tip, then checkout should add tax/fees based on subtotal.
     onGoToTip({
-      baseAmountCents: calc.subtotalCents,
-      baseAmountLabel: `$${dollarsFromCents(calc.subtotalCents)}`,
       currency: AGPAY_CONFIG.currency || 'usd',
       paymentNote: paymentNote || '',
-      // pass breakdown forward so Checkout can show/print exact values
+
+      subtotalCents: calc.subtotalCents,
       taxCents: calc.taxCents,
+      albaFeeCents: calc.albaFeeCents,
       stripeFeeCents: calc.stripeFeeCents,
       agFeeCents: calc.agFeeCents,
-      totalCents: calc.totalCents,
-      totalLabel: baseTotalLabel,
+
+      baseTotalCents: calc.baseTotalCents,
+      baseTotalLabel: `$${dollarsFromCents(calc.baseTotalCents)}`,
     });
   };
 
@@ -386,7 +385,9 @@ export default function TerminalScreen({
       </Text>
 
       <View style={s.card}>
-        <Text style={[s.cardTitle, {fontSize: 18}]}>What to charge</Text>
+        <Text style={[s.cardTitle, {fontSize: 18}]}>
+          What to charge (subtotal)
+        </Text>
 
         <View style={s.chargeRow}>
           <Text style={[s.dollar, {fontSize: 26}]}>$</Text>
@@ -418,29 +419,15 @@ export default function TerminalScreen({
           </View>
 
           <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Stripe Fee</Text>
+            <Text style={[s.rowLabel, {fontSize: 14}]}>Alba fee</Text>
             <Text style={[s.rowValue, {fontSize: 14}]}>
-              ${dollarsFromCents(calc.stripeFeeCents)}
-            </Text>
-          </View>
-
-          <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Alba Fee</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
-              ${dollarsFromCents(calc.agFeeCents)}
-            </Text>
-          </View>
-
-          <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Total Fees</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
-              ${dollarsFromCents(calc.feeCents)}
+              ${dollarsFromCents(calc.albaFeeCents)}
             </Text>
           </View>
 
           <View style={[s.row, {marginTop: 12, alignItems: 'flex-end'}]}>
             <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
-              Base total
+              Base total (before tip)
             </Text>
             <Text style={[s.rowValueGold, {fontSize: 28, fontWeight: '900'}]}>
               {baseTotalLabel}

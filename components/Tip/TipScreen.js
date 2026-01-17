@@ -26,14 +26,25 @@ function parseMoneyToCents(text) {
 }
 
 export default function TipScreen({
+  // ✅ NEW (preferred): explicit breakdown coming from TerminalScreen
+  subtotalCents,
+  taxCents,
+  albaFeeCents,
+  baseTotalCents,
+  baseTotalLabel,
+
+  // ✅ BACKWARD COMPAT: if older code still passes these, we’ll fall back safely
   baseAmountCents,
   baseAmountLabel,
+
   currency = 'usd',
   paymentNote,
   corporateName,
   storeName,
   onBack,
-  onDone, // onDone({ method, tipCents, grandTotalCents, ... })
+
+  // onDone({ method, tipCents, grandTotalCents, ... + breakdown })
+  onDone,
 }) {
   const s = terminalStyles;
 
@@ -50,7 +61,24 @@ export default function TipScreen({
     ];
   }, []);
 
-  const base = Number(baseAmountCents || 0);
+  // ✅ Choose correct base (prefer baseTotalCents, fallback to baseAmountCents)
+  const base =
+    Number.isFinite(Number(baseTotalCents)) && Number(baseTotalCents) > 0
+      ? Number(baseTotalCents)
+      : Number(baseAmountCents || 0);
+
+  const shownBaseLabel =
+    baseTotalLabel || baseAmountLabel || `$${dollarsFromCents(base)}`;
+
+  const safeSubtotalCents = Number.isFinite(Number(subtotalCents))
+    ? Number(subtotalCents)
+    : null;
+
+  const safeTaxCents = Number.isFinite(Number(taxCents)) ? Number(taxCents) : 0;
+
+  const safeAlbaFeeCents = Number.isFinite(Number(albaFeeCents))
+    ? Number(albaFeeCents)
+    : 0;
 
   const customTipCents = useMemo(
     () => parseMoneyToCents(customTipInput),
@@ -79,12 +107,23 @@ export default function TipScreen({
     }
     if (typeof onDone === 'function') {
       onDone({
-        method, // ✅ CASH or CARD
+        method, // CASH or CARD
         currency,
+
+        // ✅ tip
         tipCents: effectiveTipCents,
         tipLabel,
+
+        // ✅ totals
+        baseTotalCents: base,
+        baseTotalLabel: shownBaseLabel,
         grandTotalCents,
         grandTotalLabel,
+
+        // ✅ CRITICAL: carry breakdown forward so Checkout/Receipt/Stripe use it
+        subtotalCents: safeSubtotalCents, // can be null if older flow
+        taxCents: safeTaxCents,
+        albaFeeCents: safeAlbaFeeCents,
       });
     } else {
       Alert.alert('Missing route', 'onDone is not configured.');
@@ -136,9 +175,7 @@ export default function TipScreen({
 
           <View style={[s.row, {marginTop: 12}]}>
             <Text style={[s.rowLabel, {fontSize: 14}]}>Base total</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
-              {baseAmountLabel || `$${dollarsFromCents(base)}`}
-            </Text>
+            <Text style={[s.rowValue, {fontSize: 14}]}>{shownBaseLabel}</Text>
           </View>
 
           <View style={s.row}>
@@ -152,6 +189,20 @@ export default function TipScreen({
             </Text>
             <Text style={[s.rowValueGold, {fontSize: 30, fontWeight: '900'}]}>
               {grandTotalLabel}
+            </Text>
+          </View>
+
+          <View style={{marginTop: 10}}>
+            {safeSubtotalCents !== null && (
+              <Text style={[s.statusText, {fontSize: 12}]}>
+                Subtotal: ${dollarsFromCents(safeSubtotalCents)}
+              </Text>
+            )}
+            <Text style={[s.statusText, {fontSize: 12}]}>
+              Tax: ${dollarsFromCents(safeTaxCents)}
+            </Text>
+            <Text style={[s.statusText, {fontSize: 12}]}>
+              Alba Fee: ${dollarsFromCents(safeAlbaFeeCents)}
             </Text>
           </View>
         </View>
@@ -227,7 +278,6 @@ export default function TipScreen({
           </View>
         </View>
 
-        {/* Continue -> directly to checkout with method */}
         <View style={s.card}>
           <Text style={[s.cardTitle, {fontSize: 18}]}>Pay Now</Text>
 

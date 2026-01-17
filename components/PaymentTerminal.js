@@ -1,12 +1,8 @@
-// C:\vscode\AG\AGPay-Sand\components\PaymentTerminal.js
 import React, {forwardRef, useImperativeHandle, useMemo, useState} from 'react';
 import {View, Text, Alert, StyleSheet, ActivityIndicator} from 'react-native';
 import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
 
-// -----------------------------
-// LOG HELPERS (READABLE OUTPUT)
-// -----------------------------
 function pretty(label, obj) {
   try {
     console.log(label, JSON.stringify(obj, null, 2));
@@ -15,21 +11,15 @@ function pretty(label, obj) {
   }
 }
 
-// Stripe objects are large + deeply nested; this keeps logs readable.
 function summarizePI(pi) {
   if (!pi) return null;
-
   const charge0 = Array.isArray(pi.charges) ? pi.charges[0] : null;
-
   return {
     id: pi.id,
     status: pi.status,
     amount: pi.amount,
     currency: pi.currency,
-    created: pi.created,
     paymentMethodId: pi.paymentMethodId,
-    captureMethod: pi.captureMethod,
-    sdkUuid: pi.sdkUuid,
     charge: charge0
       ? {
           id: charge0.id,
@@ -37,20 +27,11 @@ function summarizePI(pi) {
           amount: charge0.amount,
           currency: charge0.currency,
           paid: charge0.paid,
-          outcome: charge0.outcome
-            ? {
-                networkStatus: charge0.outcome.network_status,
-                type: charge0.outcome.type,
-                riskLevel: charge0.outcome.risk_level,
-                sellerMessage: charge0.outcome.seller_message,
-              }
-            : null,
         }
       : null,
   };
 }
 
-// Safely stringify possibly-circular objects.
 function safeStringify(value) {
   try {
     return JSON.stringify(value);
@@ -71,9 +52,6 @@ function safeStringify(value) {
   }
 }
 
-// -----------------------------
-// KEYCHAIN HELPERS
-// -----------------------------
 async function readAgpaySelection() {
   try {
     const creds = await Keychain.getInternetCredentials('agpaySelection');
@@ -85,20 +63,6 @@ async function readAgpaySelection() {
   }
 }
 
-async function saveLastTx(lastTx) {
-  try {
-    await Keychain.setInternetCredentials(
-      'agpayLastTx',
-      'lastTx',
-      JSON.stringify(lastTx),
-    );
-    console.log('✅ Saved agpayLastTx');
-  } catch (e) {
-    console.log('saveLastTx error:', e);
-  }
-}
-
-// ✅ NEW: save last printable receipt (so you can re-print without charging)
 async function saveLastReceipt(receiptPayload) {
   try {
     if (!receiptPayload) return;
@@ -113,9 +77,6 @@ async function saveLastReceipt(receiptPayload) {
   }
 }
 
-// -----------------------------
-// AUTH TOKEN (JWT) HELPERS
-// -----------------------------
 async function readJwtToken() {
   const candidates = ['userProfile', 'agpayAuth', 'authToken', 'session'];
 
@@ -150,16 +111,12 @@ async function readJwtToken() {
   return null;
 }
 
-// -----------------------------
-// BACKEND SAVE (DYNAMODB) HELPERS
-// -----------------------------
 const SAVE_TX_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
 
 async function saveTxToBackend(finalTx) {
   try {
     const token = await readJwtToken();
-
     if (!token) {
       console.log(
         '❌ No JWT token found in Keychain. Cannot save transaction.',
@@ -182,17 +139,8 @@ async function saveTxToBackend(finalTx) {
     const raw = await resp.text();
     console.log('SAVE_TX HTTP status:', resp.status);
 
-    try {
-      pretty('SAVE_TX response JSON:', JSON.parse(raw));
-    } catch {
-      console.log('SAVE_TX response text:', raw);
-    }
-
     if (!resp.ok) {
-      Alert.alert(
-        'Save Failed',
-        `Transaction save failed (HTTP ${resp.status}). Check logs.`,
-      );
+      console.log('SAVE_TX failed:', raw);
       return {ok: false, status: resp.status, error: raw};
     }
 
@@ -205,17 +153,12 @@ async function saveTxToBackend(finalTx) {
     return {ok: true, status: resp.status, saved};
   } catch (e) {
     console.log('saveTxToBackend error:', e);
-    Alert.alert('Save Error', String(e?.message || e));
     return {ok: false, status: 0, error: String(e?.message || e)};
   }
 }
 
-// -----------------------------
-// DESCRIPTION BUILDER
-// -----------------------------
 function buildDescription({selection, debugMeta, amountLabel}) {
   const parts = [];
-
   const corp = selection?.corporateName || null;
   const store = selection?.storeName || null;
   const note = debugMeta?.note || null;
@@ -231,9 +174,6 @@ function buildDescription({selection, debugMeta, amountLabel}) {
   return s.length > 250 ? s.slice(0, 249) + '…' : s;
 }
 
-// -----------------------------
-// COMPONENT
-// -----------------------------
 const PaymentTerminal = forwardRef(function PaymentTerminal(
   {
     amountCents,
@@ -241,13 +181,12 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
     currency = 'usd',
     theme,
     debugMeta,
-    breakdown, // ✅ IMPORTANT: pass fee breakdown so receipt can print it
+    breakdown,
     onPaymentSuccess,
   },
   ref,
 ) {
   const terminal = useStripeTerminal();
-
   const {
     connectedReader,
     collectPaymentMethod,
@@ -310,7 +249,8 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
       setLoading(true);
 
       console.log('================ AGPAY CARD START ================');
-      pretty('CARD INPUT:', {amountCents, amountLabel, currency, debugMeta});
+      console.log('CHARGING FULL amountCents =', amountCents);
+      pretty('BREAKDOWN USED:', breakdown);
 
       const selection = await readAgpaySelection();
       const description = buildDescription({selection, debugMeta, amountLabel});
@@ -325,7 +265,7 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
       };
 
       const createPayload = {
-        amount: amountCents,
+        amount: amountCents, // ✅ MUST be full total
         currency,
         description,
         metadata,
@@ -342,13 +282,8 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
       const rawText = await resp.text();
       console.log('Create-intent HTTP status:', resp.status);
 
-      try {
-        pretty('Create-intent raw response JSON:', JSON.parse(rawText));
-      } catch {
-        console.log('Create-intent raw response text:', rawText);
-      }
-
       if (!resp.ok) {
+        console.log('Create-intent failed:', rawText);
         Alert.alert('Create failed', `HTTP ${resp.status}. Check logs.`);
         return;
       }
@@ -356,19 +291,14 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
       let piData = null;
       try {
         piData = rawText ? JSON.parse(rawText) : null;
-      } catch (e) {
-        console.log('Create-intent JSON parse error:', e);
-      }
+      } catch {}
 
       const clientSecret = resolveClientSecretFromApi(piData);
-      console.log('Resolved clientSecret:', clientSecret);
-
       if (!clientSecret) {
         Alert.alert('Error', 'Backend did not return client_secret.');
         return;
       }
 
-      // Retrieve PI
       const {paymentIntent: retrievedPI, error: retrieveError} =
         await retrievePaymentIntent(clientSecret);
 
@@ -387,7 +317,6 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
         return;
       }
 
-      // Collect
       Alert.alert('Ready', 'Tap a card on the phone to collect payment.');
 
       const {paymentIntent: collectedPI, error: collectError} =
@@ -405,7 +334,6 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
         return;
       }
 
-      // Confirm
       const {paymentIntent: confirmedPI, error: confirmError} =
         await confirmPaymentIntent({paymentIntent: collectedPI});
 
@@ -416,14 +344,13 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
         paymentIntent: summarizePI(confirmedPI),
       });
 
-      console.log('================ AGPAY CARD END ==================');
-
       if (confirmError) {
         Alert.alert('Confirm failed', confirmError.message || 'Confirm failed');
         return;
       }
 
-      // Build + save transaction
+      console.log('================ AGPAY CARD END ==================');
+
       let receiptPayload = null;
 
       try {
@@ -470,64 +397,43 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
           clientEpochMs: Date.now(),
         };
 
-        console.log('================ FINAL AGPAY TX OBJECT ================');
-        console.log(JSON.stringify(finalTx, null, 2));
-        console.log('======================================================');
+        await saveTxToBackend(finalTx);
 
-        await saveLastTx({
-          chargeId: finalTx?.stripe?.chargeId || null,
-          paymentIntentId: finalTx?.stripe?.paymentIntentId || null,
-          amount: finalTx?.stripe?.amount || null,
-          currency: finalTx?.stripe?.currency || null,
-          clientEpochMs: finalTx?.clientEpochMs || Date.now(),
-          stripeReturnedObject: finalTx?.stripeReturnedObject || null,
-        });
-
-        const saveResult = await saveTxToBackend(finalTx);
-        if (saveResult?.ok && saveResult?.saved?.txnKey) {
-          console.log('✅ Saved txnKey:', saveResult.saved.txnKey);
-        }
-
-        // ✅ Receipt payload includes breakdown so printer can show amounts
         receiptPayload = {
-          amountText: amountLabel || null,
-          amountCents: amountCents || null,
-          currency: currency || null,
+          paymentMethod: 'CARD',
+          createdAtText: new Date().toLocaleString(),
+          note: debugMeta?.note || '',
 
+          corporateName: selection?.corporateName || '',
+          storeName: selection?.storeName || '',
+
+          currency: currency || null,
           paymentId: finalTx?.stripe?.paymentIntentId || null,
           chargeId: finalTx?.stripe?.chargeId || null,
           brand,
           last4,
 
-          note: debugMeta?.note || '',
-          corporateName: selection?.corporateName || '',
-          storeName: selection?.storeName || '',
-          createdAtText: new Date().toLocaleString(),
-          paymentMethod: 'CARD',
-
-          // ✅ these power the receipt right-column amounts
-          subtotalCents: Number(
-            breakdown?.subtotalCents ?? breakdown?.baseAmountCents ?? 0,
-          ),
+          // ✅ MUST use breakdown
+          subtotalCents: Number(breakdown?.subtotalCents ?? 0),
           taxCents: Number(breakdown?.taxCents ?? 0),
           albaFeeCents: Number(breakdown?.albaFeeCents ?? 0),
           tipCents: Number(breakdown?.tipCents ?? 0),
 
           totalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
           grandTotalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
+
+          amountCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
+          amountText: amountLabel || null,
         };
 
-        // ✅ IMPORTANT: save last receipt so you can re-print without charging again
         await saveLastReceipt(receiptPayload);
       } catch (e) {
-        console.log('Final TX print/save error:', e);
+        console.log('Final TX receipt/save error:', e);
       }
 
       Alert.alert('Success', `Card payment completed: ${amountLabel || ''}`);
 
-      if (typeof onPaymentSuccess === 'function') {
-        onPaymentSuccess(receiptPayload || {amountText: amountLabel || null});
-      }
+      onPaymentSuccess?.(receiptPayload || {amountText: amountLabel || null});
     } catch (err) {
       console.log('startCardPayment unexpected error:', err);
       Alert.alert('Error', String(err?.message || err));
@@ -564,14 +470,8 @@ const PaymentTerminal = forwardRef(function PaymentTerminal(
 export default PaymentTerminal;
 
 const styles = StyleSheet.create({
-  container: {
-    marginTop: 10,
-  },
-  helper: {
-    marginTop: 8,
-    fontSize: 12,
-    textAlign: 'center',
-  },
+  container: {marginTop: 10},
+  helper: {marginTop: 8, fontSize: 12, textAlign: 'center'},
   loadingRow: {
     flexDirection: 'row',
     gap: 10,
@@ -579,8 +479,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 8,
   },
-  loadingText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
+  loadingText: {fontSize: 13, fontWeight: '800'},
 });

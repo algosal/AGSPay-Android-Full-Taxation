@@ -94,12 +94,8 @@ export default function App() {
         const valid = isValidSelection(sel) ? sel : null;
         setSelection(valid);
 
-        // If no selection, force corporate->store selection
-        if (!valid) {
-          setStep('corporate');
-        } else {
-          setStep('terminal');
-        }
+        if (!valid) setStep('corporate');
+        else setStep('terminal');
       } catch (e) {
         console.log('Boot error:', e);
         setAuthed(false);
@@ -116,6 +112,7 @@ export default function App() {
       await clearInternetCredential('agpayAuth');
       await clearInternetCredential('agpaySelection');
       await clearInternetCredential('agpayLastTx');
+      await clearInternetCredential('agpayLastReceipt');
     } catch (e) {
       console.log('Logout error:', e);
       Alert.alert('Logout error', String(e?.message || e));
@@ -138,11 +135,8 @@ export default function App() {
     const valid = isValidSelection(sel) ? sel : null;
     setSelection(valid);
 
-    if (!valid) {
-      setStep('corporate');
-    } else {
-      setStep('terminal');
-    }
+    if (!valid) setStep('corporate');
+    else setStep('terminal');
   };
 
   const handleCorporatePicked = corp => {
@@ -162,33 +156,42 @@ export default function App() {
     setStep('terminal');
   };
 
-  // Terminal -> Tip
+  // ✅ Terminal -> Tip (carry full breakdown)
   const handleGoToTip = payloadFromTerminal => {
+    console.log('✅ Terminal -> Tip payload:', payloadFromTerminal);
     setTipPayload(payloadFromTerminal);
     setStep('tip');
   };
 
-  // Tip -> Checkout
+  // ✅ Tip -> Checkout (carry breakdown + tip)
   const handleTipDone = payloadFromTip => {
-    // TipScreen gives us grandTotalCents
-    const baseAmountCents = Number(tipPayload?.baseAmountCents || 0);
+    console.log('✅ Tip -> Checkout payload:', payloadFromTip);
 
     setCheckoutPayload({
       method: payloadFromTip?.method, // CASH or CARD
-      baseAmountCents,
-      tipCents: Number(payloadFromTip?.tipCents || 0),
-      grandTotalCents: Number(payloadFromTip?.grandTotalCents || 0),
-      grandTotalLabel: payloadFromTip?.grandTotalLabel || '',
-      currency: tipPayload?.currency || payloadFromTip?.currency || 'usd',
+      currency: payloadFromTip?.currency || tipPayload?.currency || 'usd',
+
       paymentNote: tipPayload?.paymentNote || paymentNote || '',
       corporateName: selection?.corporateName || '',
       storeName: selection?.storeName || '',
+
+      // ✅ REQUIRED breakdown
+      subtotalCents: Number(payloadFromTip?.subtotalCents || 0),
+      taxCents: Number(payloadFromTip?.taxCents || 0),
+      albaFeeCents: Number(payloadFromTip?.albaFeeCents || 0),
+
+      // ✅ REQUIRED tip
+      tipCents: Number(payloadFromTip?.tipCents || 0),
+
+      // optional UI
+      grandTotalCents: Number(payloadFromTip?.grandTotalCents || 0),
+      grandTotalLabel: payloadFromTip?.grandTotalLabel || '',
     });
 
     setStep('checkout');
   };
 
-  // Checkout -> Receipt
+  // ✅ Checkout -> Receipt
   const handlePaid = receiptPayload => {
     console.log('✅ PAID => receipt:', receiptPayload);
     setReceipt(receiptPayload || {});
@@ -232,8 +235,12 @@ export default function App() {
   } else if (step === 'tip') {
     content = (
       <TipScreen
-        baseAmountCents={tipPayload?.baseAmountCents}
-        baseAmountLabel={tipPayload?.baseAmountLabel}
+        // ✅ MUST come from TerminalScreen breakdown
+        subtotalCents={tipPayload?.subtotalCents}
+        taxCents={tipPayload?.taxCents}
+        albaFeeCents={tipPayload?.albaFeeCents}
+        baseTotalCents={tipPayload?.baseTotalCents}
+        baseTotalLabel={tipPayload?.baseTotalLabel}
         currency={tipPayload?.currency || 'usd'}
         paymentNote={tipPayload?.paymentNote || paymentNote || ''}
         corporateName={selection?.corporateName || ''}
@@ -250,10 +257,11 @@ export default function App() {
         paymentNote={checkoutPayload?.paymentNote || ''}
         corporateName={checkoutPayload?.corporateName || ''}
         storeName={checkoutPayload?.storeName || ''}
-        baseAmountCents={checkoutPayload?.baseAmountCents || 0}
+        // ✅ REQUIRED for correct total charge
+        subtotalCents={checkoutPayload?.subtotalCents || 0}
+        taxCents={checkoutPayload?.taxCents || 0}
+        albaFeeCents={checkoutPayload?.albaFeeCents || 0}
         tipCents={checkoutPayload?.tipCents || 0}
-        grandTotalCents={checkoutPayload?.grandTotalCents || 0}
-        grandTotalLabel={checkoutPayload?.grandTotalLabel || ''}
         onPaid={handlePaid}
         onBack={() => setStep('tip')}
         onLogout={handleLogout}

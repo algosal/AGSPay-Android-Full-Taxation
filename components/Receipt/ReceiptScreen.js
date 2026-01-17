@@ -1,6 +1,7 @@
-﻿import React from 'react';
+﻿import React, {useCallback, useEffect, useState} from 'react';
 import {View, Text, TouchableOpacity, StyleSheet, Alert} from 'react-native';
 import RNPrint from 'react-native-print';
+import * as Keychain from 'react-native-keychain';
 
 const GOLD = '#d4af37';
 
@@ -22,75 +23,59 @@ function clipText(value, max = 30) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
-function nOrNull(x) {
+function nOr0(x) {
   const n = Number(x);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : 0;
 }
 
 function buildReceiptHtml(receipt) {
   const r = receipt || {};
 
-  // Always use cents fields for math, text is display-only.
   const totalCents =
     Number(r.totalCents) ||
     Number(r.grandTotalCents) ||
     Number(r.amountCents) ||
     0;
 
-  // Show total even if 0 (you said real tests are always >= $1)
   const totalText = r.amountText || money(totalCents) || '(missing)';
 
-  const subtotalCents = nOrNull(r.subtotalCents);
-  const taxCents = nOrNull(r.taxCents);
-  const albaFeeCents = nOrNull(r.albaFeeCents);
-  const tipCents = nOrNull(r.tipCents);
-
-  // Compute subtotal if not provided
-  const computedSubtotalCents =
-    subtotalCents === null
-      ? Math.max(
-          0,
-          totalCents - (taxCents || 0) - (albaFeeCents || 0) - (tipCents || 0),
-        )
-      : null;
-
-  const finalSubtotalCents =
-    subtotalCents !== null ? subtotalCents : computedSubtotalCents;
+  const subtotalCents = nOr0(r.subtotalCents);
+  const taxCents = nOr0(r.taxCents);
+  const albaFeeCents = nOr0(r.albaFeeCents);
+  const tipCents = nOr0(r.tipCents);
 
   const createdAtText = r.createdAtText ? String(r.createdAtText) : '';
-  const corp = r.corporateName ? clipText(r.corporateName) : '';
-  const store = r.storeName ? clipText(r.storeName) : '';
+  const corp = r.corporateName ? clipText(r.corporateName, 32) : '';
+  const store = r.storeName ? clipText(r.storeName, 32) : '';
 
   const method = r.paymentMethod ? String(r.paymentMethod) : '';
   const cardLine =
     r.brand || r.last4
-      ? `Card: ${r.brand || 'Card'}${r.last4 ? ' **** ' + r.last4 : ''}`
+      ? `Card • ${(r.brand || 'Card').toUpperCase()}${
+          r.last4 ? ' • •••• ' + r.last4 : ''
+        }`
       : '';
 
   const paymentId = r.paymentId ? String(r.paymentId) : '';
   const chargeId = r.chargeId ? String(r.chargeId) : '';
-  const note = r.note ? clipText(r.note, 36) : '';
+  const note = r.note ? clipText(r.note, 44) : '';
 
-  const rows = [];
+  const lineItems = [
+    {label: 'Subtotal', amount: money(subtotalCents)},
+    {label: 'Tax', amount: money(taxCents)},
+    {label: 'Service Fee', amount: money(albaFeeCents)},
+    {label: 'Tip', amount: money(tipCents)},
+  ];
 
-  // Print these ALWAYS if present; if missing, skip.
-  if (finalSubtotalCents !== null)
-    rows.push(['Subtotal', money(finalSubtotalCents)]);
-  if (taxCents !== null) rows.push(['Tax', money(taxCents)]);
-  if (albaFeeCents !== null) rows.push(['Alba Fee', money(albaFeeCents)]);
-  if (tipCents !== null) rows.push(['Tip', money(tipCents)]);
-
-  rows.push(['TOTAL', totalText]);
-
-  const rowsHtml = rows
-    .map(([label, amount]) => {
-      const isTotal = label === 'TOTAL';
-      return `
-        <tr class="${isTotal ? 'total' : ''}">
-          <td class="l">${escapeHtml(label)}</td>
-          <td class="r">${escapeHtml(amount)}</td>
-        </tr>`;
-    })
+  const itemsHtml = lineItems
+    .map(
+      it => `
+      <tr class="row">
+        <td class="l">${escapeHtml(it.label)}</td>
+        <td class="r">${escapeHtml(it.amount)}</td>
+      </tr>
+    `,
+    )
     .join('');
 
   return `
@@ -98,28 +83,54 @@ function buildReceiptHtml(receipt) {
 <head>
   <meta charset="utf-8" />
   <style>
-    /* Force 58mm portrait */
     @page { size: 58mm auto; margin: 0; }
 
     html, body {
       width: 58mm;
       margin: 0;
       padding: 0;
+      background: #fff;
     }
 
     body {
       font-family: monospace;
-      font-size: 20px;
+      font-size: 18px;
       line-height: 1.15;
+      color: #000;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
       box-sizing: border-box;
     }
 
-    .wrap { padding: 0 2mm; } /* tiny safe padding */
-    .center { text-align: center; }
-    .bold { font-weight: 900; }
-    .line { border-top: 1px dashed #000; margin: 6px 0; }
+    .wrap { padding: 0 1.2mm; }
 
-    .meta { margin: 2px 0; }
+    .brand {
+      text-align: center;
+      margin-top: 6px;
+    }
+    .brand .logo {
+      font-weight: 900;
+      letter-spacing: 2px;
+      font-size: 22px;
+    }
+    .brand .sub {
+      margin-top: 2px;
+      font-size: 13px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+
+    .divider {
+      border-top: 1px solid #000;
+      margin: 8px 0;
+    }
+
+    .meta {
+      font-size: 14px;
+      margin: 2px 0;
+    }
+    .meta .k { opacity: 0.75; }
+    .meta .v { font-weight: 900; }
 
     table {
       width: 100%;
@@ -128,100 +139,190 @@ function buildReceiptHtml(receipt) {
     }
 
     td {
-      padding: 2px 0;
+      padding: 3px 0;
       vertical-align: top;
       overflow: hidden;
     }
 
     td.l {
-      width: 62%;
+      width: 60%;
       white-space: nowrap;
       text-overflow: ellipsis;
     }
 
     td.r {
-      width: 38%;
+      width: 40%;
       text-align: right;
       white-space: nowrap;
+      font-weight: 900;
     }
 
-    tr.total td {
+    .totalWrap {
+      border-top: 1px solid #000;
+      border-bottom: 1px solid #000;
+      padding: 6px 0;
+      margin-top: 6px;
+    }
+
+    .totalRow {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .totalLabel {
+      font-size: 16px;
       font-weight: 900;
-      padding-top: 6px;
+      letter-spacing: 1px;
+    }
+
+    .totalValue {
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .tiny {
+      font-size: 12px;
+      opacity: 0.9;
+      margin-top: 6px;
+    }
+
+    .footer {
+      text-align: center;
+      margin-top: 10px;
+      padding-bottom: 10px;
+    }
+
+    .thanks {
+      font-weight: 900;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-size: 14px;
+    }
+
+    .fine {
+      font-size: 11px;
+      opacity: 0.9;
+      margin-top: 4px;
     }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="center bold">AGPAY RECEIPT</div>
-    <div class="line"></div>
+
+    <div class="brand">
+      <div class="logo">AGPAY</div>
+      <div class="sub">RECEIPT</div>
+    </div>
+
+    <div class="divider"></div>
 
     ${
       createdAtText
-        ? `<div class="meta">Date: ${escapeHtml(createdAtText)}</div>`
+        ? `<div class="meta"><span class="k">Transaction Date</span>: <span class="v">${escapeHtml(
+            createdAtText,
+          )}</span></div>`
         : ''
     }
     ${
       corp
-        ? `<div class="meta">Corp: <span class="bold">${escapeHtml(
+        ? `<div class="meta"><span class="k">Corporate</span>: <span class="v">${escapeHtml(
             corp,
           )}</span></div>`
         : ''
     }
     ${
       store
-        ? `<div class="meta">Store: <span class="bold">${escapeHtml(
+        ? `<div class="meta"><span class="k">Store</span>: <span class="v">${escapeHtml(
             store,
           )}</span></div>`
         : ''
     }
 
-    <div class="line"></div>
+    <div class="divider"></div>
 
-    ${method ? `<div class="meta">Method: ${escapeHtml(method)}</div>` : ''}
-    ${cardLine ? `<div class="meta">${escapeHtml(cardLine)}</div>` : ''}
+    ${
+      method
+        ? `<div class="meta"><span class="k">Payment Method</span>: <span class="v">${escapeHtml(
+            method.toUpperCase(),
+          )}</span></div>`
+        : ''
+    }
+    ${
+      cardLine
+        ? `<div class="meta"><span class="v">${escapeHtml(
+            cardLine,
+          )}</span></div>`
+        : ''
+    }
     ${
       paymentId
-        ? `<div class="meta">Payment ID: ${escapeHtml(paymentId)}</div>`
+        ? `<div class="tiny">Payment ID: ${escapeHtml(paymentId)}</div>`
         : ''
     }
     ${
       chargeId
-        ? `<div class="meta">Charge ID: ${escapeHtml(chargeId)}</div>`
+        ? `<div class="tiny">Charge ID: ${escapeHtml(chargeId)}</div>`
         : ''
     }
 
-    <div class="line"></div>
+    <div class="divider"></div>
 
     <table>
-      ${rowsHtml}
+      ${itemsHtml}
     </table>
 
-    ${
-      note
-        ? `<div class="meta" style="margin-top:6px;">Note: ${escapeHtml(
-            note,
-          )}</div>`
-        : ''
-    }
+    <div class="totalWrap">
+      <div class="totalRow">
+        <div class="totalLabel">TOTAL</div>
+        <div class="totalValue">${escapeHtml(totalText)}</div>
+      </div>
+    </div>
 
-    <div style="margin-top:10px;" class="center">Thank you!</div>
-    <div style="height:10px;"></div>
+    ${note ? `<div class="tiny">Note: ${escapeHtml(note)}</div>` : ''}
+
+    <div class="footer">
+      <div class="thanks">Thank you for choosing AGPay</div>
+      <div class="fine">Luxury-grade payments • Secure • Trusted</div>
+    </div>
+
   </div>
 </body>
 </html>`;
 }
 
+async function readLastReceipt() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpayLastReceipt');
+    if (!creds || !creds.password) return null;
+    return JSON.parse(creds.password);
+  } catch {
+    return null;
+  }
+}
+
 export default function ReceiptScreen({receipt, onDone, onLogout, onBack}) {
-  async function handlePrint() {
+  const [localReceipt, setLocalReceipt] = useState(receipt || null);
+
+  useEffect(() => {
+    if (receipt) {
+      setLocalReceipt(receipt);
+      return;
+    }
+    readLastReceipt().then(saved => {
+      if (saved) setLocalReceipt(saved);
+    });
+  }, [receipt]);
+
+  const handlePrint = useCallback(async () => {
     try {
-      const html = buildReceiptHtml(receipt);
+      const html = buildReceiptHtml(localReceipt);
       await RNPrint.print({html});
     } catch (e) {
       console.log('PRINT error:', e);
       Alert.alert('Print failed', String(e?.message || e));
     }
-  }
+  }, [localReceipt]);
 
   return (
     <View style={styles.root}>

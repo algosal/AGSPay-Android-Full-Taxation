@@ -16,52 +16,58 @@ function dollarsFromCents(c) {
 }
 
 export default function CheckoutScreen({
-  method, // 'CASH' | 'CARD'
+  method,
   currency = 'usd',
   paymentNote,
   corporateName,
   storeName,
 
-  // expected inputs from tip screen
-  baseAmountCents, // SUBTOTAL
+  // ✅ REQUIRED breakdown
+  subtotalCents,
+  taxCents,
+  albaFeeCents,
   tipCents,
-
-  grandTotalCents, // optional legacy
-  grandTotalLabel, // optional legacy
 
   onPaid,
   onBack,
   onLogout,
 }) {
   const s = terminalStyles;
-  const paymentRef = useRef(null);
 
+  const paymentRef = useRef(null);
   const [starting, setStarting] = useState(false);
   const [didStart, setDidStart] = useState(false);
 
-  // If you still pass grandTotalCents, we trust it; otherwise compute from base+tip only.
-  // (Your fee/tax logic lives elsewhere; the important part is: breakdown passed through.)
-  const totalCents = Number(
-    grandTotalCents ?? Number(baseAmountCents || 0) + Number(tipCents || 0),
-  );
-  const totalLabel = grandTotalLabel || `$${dollarsFromCents(totalCents)}`;
+  const safeSubtotalCents = Number(subtotalCents || 0);
+  const safeTaxCents = Number(taxCents || 0);
+  const safeAlbaFeeCents = Number(albaFeeCents || 0);
+  const safeTipCents = Number(tipCents || 0);
+
+  // ✅ FINAL amount charged
+  const grandTotalCents =
+    safeSubtotalCents + safeTaxCents + safeAlbaFeeCents + safeTipCents;
+
+  const totalLabel = `$${dollarsFromCents(grandTotalCents)}`;
 
   const breakdown = useMemo(() => {
     return {
-      subtotalCents: Number(baseAmountCents || 0),
-      tipCents: Number(tipCents || 0),
-
-      // If you have these available in props, pass them too:
-      taxCents: Number(0),
-      albaFeeCents: Number(0),
-      stripeFeeCents: Number(0),
-
-      totalCents: totalCents,
-      totalLabel: totalLabel,
+      subtotalCents: safeSubtotalCents,
+      taxCents: safeTaxCents,
+      albaFeeCents: safeAlbaFeeCents,
+      tipCents: safeTipCents,
+      totalCents: grandTotalCents,
+      totalLabel,
     };
-  }, [baseAmountCents, tipCents, totalCents, totalLabel]);
+  }, [
+    safeSubtotalCents,
+    safeTaxCents,
+    safeAlbaFeeCents,
+    safeTipCents,
+    grandTotalCents,
+    totalLabel,
+  ]);
 
-  // CASH
+  // CASH: mark paid + go receipt
   useEffect(() => {
     if (didStart) return;
     if (String(method || '').toUpperCase() !== 'CASH') return;
@@ -69,48 +75,47 @@ export default function CheckoutScreen({
     setDidStart(true);
 
     const receiptPayload = {
-      amountText: totalLabel,
-      amountCents: totalCents,
       currency,
-      brand: null,
-      last4: null,
-      paymentId: null,
-      chargeId: null,
+      paymentMethod: 'CASH',
+      createdAtText: new Date().toLocaleString(),
       note: paymentNote || '',
       corporateName: corporateName || '',
       storeName: storeName || '',
-      createdAtText: new Date().toLocaleString(),
-      paymentMethod: 'CASH',
 
-      // breakdown fields for printing
-      subtotalCents: breakdown.subtotalCents,
-      tipCents: breakdown.tipCents,
-      taxCents: breakdown.taxCents,
-      albaFeeCents: breakdown.albaFeeCents,
-      stripeFeeCents: breakdown.stripeFeeCents,
-      totalCents: breakdown.totalCents,
+      subtotalCents: safeSubtotalCents,
+      taxCents: safeTaxCents,
+      albaFeeCents: safeAlbaFeeCents,
+      tipCents: safeTipCents,
+      totalCents: grandTotalCents,
+      grandTotalCents: grandTotalCents,
+
+      amountCents: grandTotalCents,
+      amountText: totalLabel,
     };
 
     onPaid?.(receiptPayload);
   }, [
     didStart,
     method,
-    totalLabel,
-    totalCents,
     currency,
     paymentNote,
     corporateName,
     storeName,
+    safeSubtotalCents,
+    safeTaxCents,
+    safeAlbaFeeCents,
+    safeTipCents,
+    grandTotalCents,
+    totalLabel,
     onPaid,
-    breakdown,
   ]);
 
-  // CARD
+  // CARD: auto start once
   useEffect(() => {
     if (didStart) return;
     if (String(method || '').toUpperCase() !== 'CARD') return;
 
-    if (!Number.isFinite(totalCents) || totalCents <= 0) {
+    if (!Number.isFinite(grandTotalCents) || grandTotalCents <= 0) {
       Alert.alert('Invalid total', 'Total must be > $0.00');
       return;
     }
@@ -128,33 +133,27 @@ export default function CheckoutScreen({
         setStarting(false);
       }
     }, 200);
-  }, [didStart, method, totalCents]);
+  }, [didStart, method, grandTotalCents]);
 
   const handlePaymentSuccess = receiptPayload => {
     const merged = {
       ...receiptPayload,
 
-      // harden totals
-      amountText: receiptPayload?.amountText || totalLabel,
-      amountCents: Number(receiptPayload?.amountCents || totalCents),
-      totalCents: Number(receiptPayload?.totalCents || totalCents),
-
+      currency,
       corporateName: receiptPayload?.corporateName || corporateName || '',
       storeName: receiptPayload?.storeName || storeName || '',
       note: receiptPayload?.note ?? paymentNote ?? '',
 
-      // ensure breakdown exists for print even if PaymentTerminal didn't supply (it does now)
-      subtotalCents: Number(
-        receiptPayload?.subtotalCents ?? breakdown.subtotalCents ?? 0,
-      ),
-      taxCents: Number(receiptPayload?.taxCents ?? breakdown.taxCents ?? 0),
-      albaFeeCents: Number(
-        receiptPayload?.albaFeeCents ?? breakdown.albaFeeCents ?? 0,
-      ),
-      stripeFeeCents: Number(
-        receiptPayload?.stripeFeeCents ?? breakdown.stripeFeeCents ?? 0,
-      ),
-      tipCents: Number(receiptPayload?.tipCents ?? breakdown.tipCents ?? 0),
+      subtotalCents: safeSubtotalCents,
+      taxCents: safeTaxCents,
+      albaFeeCents: safeAlbaFeeCents,
+      tipCents: safeTipCents,
+
+      totalCents: grandTotalCents,
+      grandTotalCents: grandTotalCents,
+
+      amountCents: grandTotalCents,
+      amountText: totalLabel,
     };
 
     onPaid?.(merged);
@@ -183,17 +182,33 @@ export default function CheckoutScreen({
       <View style={s.card}>
         <Text style={[s.cardTitle, {fontSize: 18}]}>Order Summary</Text>
 
-        {!!corporateName && (
-          <Text style={[s.statusText, {fontSize: 14}]}>{corporateName}</Text>
-        )}
-        {!!storeName && (
-          <Text style={[s.statusText, {fontSize: 14}]}>Store: {storeName}</Text>
-        )}
-        {!!paymentNote && (
-          <Text style={[s.statusText, {fontSize: 14}]}>
-            Note: {paymentNote}
+        <View style={[s.row, {marginTop: 12}]}>
+          <Text style={[s.rowLabel, {fontSize: 14}]}>Subtotal</Text>
+          <Text style={[s.rowValue, {fontSize: 14}]}>
+            ${dollarsFromCents(safeSubtotalCents)}
           </Text>
-        )}
+        </View>
+
+        <View style={s.row}>
+          <Text style={[s.rowLabel, {fontSize: 14}]}>Tax</Text>
+          <Text style={[s.rowValue, {fontSize: 14}]}>
+            ${dollarsFromCents(safeTaxCents)}
+          </Text>
+        </View>
+
+        <View style={s.row}>
+          <Text style={[s.rowLabel, {fontSize: 14}]}>Alba Fee</Text>
+          <Text style={[s.rowValue, {fontSize: 14}]}>
+            ${dollarsFromCents(safeAlbaFeeCents)}
+          </Text>
+        </View>
+
+        <View style={s.row}>
+          <Text style={[s.rowLabel, {fontSize: 14}]}>Tip</Text>
+          <Text style={[s.rowValue, {fontSize: 14}]}>
+            ${dollarsFromCents(safeTipCents)}
+          </Text>
+        </View>
 
         <View style={[s.row, {marginTop: 10, alignItems: 'flex-end'}]}>
           <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
@@ -231,11 +246,11 @@ export default function CheckoutScreen({
 
             <PaymentTerminal
               ref={paymentRef}
-              amountCents={totalCents}
+              amountCents={grandTotalCents} // ✅ Stripe charges THIS
               amountLabel={totalLabel}
               currency={currency}
               debugMeta={{note: paymentNote || ''}}
-              breakdown={breakdown}
+              breakdown={breakdown} // ✅ receipt uses this
               onPaymentSuccess={handlePaymentSuccess}
             />
           </>
