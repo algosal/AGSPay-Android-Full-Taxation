@@ -1,3 +1,4 @@
+// components/Terminal/TerminalScreen.jsx
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
@@ -72,8 +73,8 @@ function clamp(n, min, max) {
 export default function TerminalScreen({
   paymentNote,
   setPaymentNote,
-  onLogout,
-  onChangeStoreRequested,
+  onLogout, // kept for compatibility (not used here)
+  onChangeStoreRequested, // kept for compatibility (not used here)
   onGoToTip,
 }) {
   const s = terminalStyles;
@@ -196,8 +197,8 @@ export default function TerminalScreen({
     tapToPaySupported === null
       ? 'Unknown'
       : tapToPaySupported
-      ? '✅ Supported'
-      : '❌ Not supported';
+      ? 'Supported'
+      : 'Not supported';
 
   const baseTotalLabel = `$${dollarsFromCents(calc.baseTotalCents)}`;
   const connectDisabled = connecting || !initialized;
@@ -296,24 +297,6 @@ export default function TerminalScreen({
     await disconnectReader();
   };
 
-  const handleChangeStore = async () => {
-    Alert.alert(
-      'Change store',
-      'This will require selecting corporate + store again.',
-      [
-        {text: 'Cancel', style: 'cancel'},
-        {
-          text: 'Continue',
-          style: 'destructive',
-          onPress: async () => {
-            await clearAgpaySelection();
-            onChangeStoreRequested?.();
-          },
-        },
-      ],
-    );
-  };
-
   const alertAmountMissing = () => {
     Alert.alert(
       'Enter amount',
@@ -352,47 +335,84 @@ export default function TerminalScreen({
     });
   };
 
+  // ✅ Top connect area UI
+  const readerLabel = connectedReader
+    ? connectedReader.label || 'Connected'
+    : 'Not connected';
+
+  const pill = (() => {
+    if (connectedReader) {
+      return {text: 'CONNECTED', bg: AG.gold, fg: AG.goldText, icon: '🔌'};
+    }
+    if (connecting) {
+      return {text: 'CONNECTING', bg: '#334155', fg: AG.text, icon: '⏳'};
+    }
+    return {text: 'TAP TO CONNECT', bg: '#334155', fg: AG.text, icon: '📶'};
+  })();
+
+  const onTapConnectRow = () => {
+    if (connectDisabled) return;
+    if (connectedReader) handleDisconnect();
+    else handleConnectTapToPay();
+  };
+
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.content}>
       <View style={s.headerRow}>
-        <Text style={[s.title, {fontSize: 22}]}>
+        <Text style={s.title}>
           <Text style={{color: AG.gold}}>AG</Text>
           <Text style={{color: AG.text}}>Pay · Tap to Pay</Text>
         </Text>
 
-        <View style={{flexDirection: 'row', gap: 10}}>
-          <TouchableOpacity
-            onPress={connectedReader ? handleDisconnect : handleConnectTapToPay}
-            disabled={connectDisabled}
-            style={[s.logoutBtn, connectDisabled && {opacity: 0.6}]}>
-            <Text style={s.logoutIcon}>
-              {connectedReader ? '🔌' : connecting ? '⏳' : '📶'}
+        <Text style={s.subtitle}>Quick, simple in-person payments</Text>
+
+        {/* ✅ Tap-to-connect at TOP (not a button) */}
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={onTapConnectRow}
+          disabled={connectDisabled}
+          style={[s.topConnectRow, connectDisabled && {opacity: 0.65}]}>
+          <View style={s.topConnectLeft}>
+            <Text style={s.topConnectIcon}>{pill.icon}</Text>
+            <View style={{flex: 1}}>
+              <Text style={s.topConnectTitle}>
+                {connectedReader ? 'Reader Connected' : 'Connect Reader'}
+              </Text>
+              <Text style={s.topConnectSub}>
+                {USE_SIMULATED_READER
+                  ? 'Simulated demo mode'
+                  : `SDK: ${
+                      initialized ? 'Ready' : 'Initializing'
+                    } · TapToPay: ${supportLabel}`}
+                {' · '}
+                {readerLabel}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={[
+              s.topConnectPill,
+              connectedReader && {backgroundColor: pill.bg},
+            ]}>
+            <Text
+              style={[
+                s.topConnectPillText,
+                connectedReader && {color: pill.fg},
+              ]}>
+              {pill.text}
             </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={handleChangeStore} style={s.logoutBtn}>
-            <Text style={s.logoutIcon}>🏪</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
-            <Text style={s.logoutIcon}>⎋</Text>
-          </TouchableOpacity>
-        </View>
+          </View>
+        </TouchableOpacity>
       </View>
 
-      <Text style={[s.subtitle, {fontSize: 15}]}>
-        Quick, simple in-person payments
-      </Text>
-
       <View style={s.card}>
-        <Text style={[s.cardTitle, {fontSize: 18}]}>
-          What to charge (subtotal)
-        </Text>
+        <Text style={s.cardTitle}>What to charge (subtotal)</Text>
 
         <View style={s.chargeRow}>
-          <Text style={[s.dollar, {fontSize: 26}]}>$</Text>
+          <Text style={s.dollar}>$</Text>
           <TextInput
-            style={[s.amountInput, {fontSize: 24}]}
+            style={s.amountInput}
             keyboardType="numeric"
             value={subtotalInput}
             onChangeText={setSubtotalInput}
@@ -403,35 +423,31 @@ export default function TerminalScreen({
 
         <View style={s.dividerTop}>
           <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Subtotal</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
+            <Text style={s.rowLabel}>Subtotal</Text>
+            <Text style={s.rowValue}>
               ${dollarsFromCents(calc.subtotalCents)}
             </Text>
           </View>
 
           <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>
+            <Text style={s.rowLabel}>
               Tax ({(calc.taxRate * 100).toFixed(3)}%)
             </Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
-              ${dollarsFromCents(calc.taxCents)}
-            </Text>
+            <Text style={s.rowValue}>${dollarsFromCents(calc.taxCents)}</Text>
           </View>
 
           <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Alba fee</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>
+            <Text style={s.rowLabel}>Alba fee</Text>
+            <Text style={s.rowValue}>
               ${dollarsFromCents(calc.albaFeeCents)}
             </Text>
           </View>
 
           <View style={[s.row, {marginTop: 12, alignItems: 'flex-end'}]}>
-            <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
+            <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 14}]}>
               Base total (before tip)
             </Text>
-            <Text style={[s.rowValueGold, {fontSize: 28, fontWeight: '900'}]}>
-              {baseTotalLabel}
-            </Text>
+            <Text style={s.rowValueGold}>{baseTotalLabel}</Text>
           </View>
 
           {!hasValidAmount && (
@@ -443,28 +459,10 @@ export default function TerminalScreen({
       </View>
 
       <View style={s.card}>
-        <Text style={[s.cardTitle, {fontSize: 18}]}>Reader status</Text>
-
-        <Text style={[s.statusText, {fontSize: 14}]}>
-          SDK: {initialized ? 'Ready' : 'Initializing'}
-        </Text>
-        <Text style={[s.statusText, {fontSize: 14}]}>
-          Tap to Pay:{' '}
-          {USE_SIMULATED_READER ? '🧪 Simulated (demo)' : supportLabel}
-        </Text>
-        <Text style={[s.statusText, {fontSize: 14}]}>
-          Reader:{' '}
-          {connectedReader
-            ? connectedReader.label || 'Connected'
-            : 'Not connected'}
-        </Text>
-      </View>
-
-      <View style={s.card}>
-        <Text style={[s.cardTitle, {fontSize: 18}]}>Notes</Text>
+        <Text style={s.cardTitle}>Notes</Text>
 
         <TextInput
-          style={[s.noteInput, {fontSize: 16}]}
+          style={s.noteInput}
           placeholder="e.g. Chicken over rice + soda"
           placeholderTextColor={AG.muted}
           value={paymentNote}
@@ -473,17 +471,9 @@ export default function TerminalScreen({
 
         <TouchableOpacity
           onPress={handleGoTip}
-          style={[
-            s.primaryBtn,
-            {
-              marginTop: 12,
-              backgroundColor: AG.gold,
-              opacity: hasValidAmount ? 1 : 0.65,
-            },
-          ]}>
-          <Text style={[s.primaryBtnText, {color: AG.goldText, fontSize: 16}]}>
-            Continue
-          </Text>
+          disabled={!hasValidAmount}
+          style={[s.primaryBtn, {opacity: hasValidAmount ? 1 : 0.65}]}>
+          <Text style={s.primaryBtnText}>Continue</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>

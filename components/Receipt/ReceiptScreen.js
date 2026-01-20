@@ -1,4 +1,5 @@
-﻿import React, {useCallback, useEffect, useState} from 'react';
+﻿// components/Receipt/ReceiptScreen.js
+import React, {useCallback, useEffect, useState} from 'react';
 import {View, Text, TouchableOpacity, StyleSheet, Alert} from 'react-native';
 import RNPrint from 'react-native-print';
 import * as Keychain from 'react-native-keychain';
@@ -14,7 +15,7 @@ function escapeHtml(input) {
 
 function money(cents) {
   const n = Number(cents ?? NaN);
-  if (!Number.isFinite(n)) return '';
+  if (!Number.isFinite(n)) return '$0.00';
   return '$' + (n / 100).toFixed(2);
 }
 
@@ -62,7 +63,7 @@ function buildReceiptHtml(receipt) {
 
   const lineItems = [
     {label: 'Subtotal', amount: money(subtotalCents)},
-    {label: 'Tax', amount: money(taxCents)},
+    {label: 'Sales Tax', amount: money(taxCents)},
     {label: 'Service Fee', amount: money(albaFeeCents)},
     {label: 'Tip', amount: money(tipCents)},
   ];
@@ -84,14 +85,7 @@ function buildReceiptHtml(receipt) {
   <meta charset="utf-8" />
   <style>
     @page { size: 58mm auto; margin: 0; }
-
-    html, body {
-      width: 58mm;
-      margin: 0;
-      padding: 0;
-      background: #fff;
-    }
-
+    html, body { width: 58mm; margin: 0; padding: 0; background: #fff; }
     body {
       font-family: monospace;
       font-size: 18px;
@@ -101,61 +95,22 @@ function buildReceiptHtml(receipt) {
       print-color-adjust: exact;
       box-sizing: border-box;
     }
-
     .wrap { padding: 0 1.2mm; }
 
-    .brand {
-      text-align: center;
-      margin-top: 6px;
-    }
-    .brand .logo {
-      font-weight: 900;
-      letter-spacing: 2px;
-      font-size: 22px;
-    }
-    .brand .sub {
-      margin-top: 2px;
-      font-size: 13px;
-      letter-spacing: 1.2px;
-      text-transform: uppercase;
-    }
+    .brand { text-align: center; margin-top: 6px; }
+    .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
+    .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
 
-    .divider {
-      border-top: 1px solid #000;
-      margin: 8px 0;
-    }
+    .divider { border-top: 1px solid #000; margin: 8px 0; }
 
-    .meta {
-      font-size: 14px;
-      margin: 2px 0;
-    }
+    .meta { font-size: 14px; margin: 2px 0; }
     .meta .k { opacity: 0.75; }
     .meta .v { font-weight: 900; }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
-
-    td {
-      padding: 3px 0;
-      vertical-align: top;
-      overflow: hidden;
-    }
-
-    td.l {
-      width: 60%;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-
-    td.r {
-      width: 40%;
-      text-align: right;
-      white-space: nowrap;
-      font-weight: 900;
-    }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    td { padding: 3px 0; vertical-align: top; overflow: hidden; }
+    td.l { width: 60%; white-space: nowrap; text-overflow: ellipsis; }
+    td.r { width: 40%; text-align: right; white-space: nowrap; font-weight: 900; }
 
     .totalWrap {
       border-top: 1px solid #000;
@@ -163,48 +118,15 @@ function buildReceiptHtml(receipt) {
       padding: 6px 0;
       margin-top: 6px;
     }
+    .totalRow { display: flex; justify-content: space-between; align-items: baseline; }
+    .totalLabel { font-size: 16px; font-weight: 900; letter-spacing: 1px; }
+    .totalValue { font-size: 22px; font-weight: 900; }
 
-    .totalRow {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-    }
+    .tiny { font-size: 12px; opacity: 0.9; margin-top: 6px; }
 
-    .totalLabel {
-      font-size: 16px;
-      font-weight: 900;
-      letter-spacing: 1px;
-    }
-
-    .totalValue {
-      font-size: 22px;
-      font-weight: 900;
-    }
-
-    .tiny {
-      font-size: 12px;
-      opacity: 0.9;
-      margin-top: 6px;
-    }
-
-    .footer {
-      text-align: center;
-      margin-top: 10px;
-      padding-bottom: 10px;
-    }
-
-    .thanks {
-      font-weight: 900;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      font-size: 14px;
-    }
-
-    .fine {
-      font-size: 11px;
-      opacity: 0.9;
-      margin-top: 4px;
-    }
+    .footer { text-align: center; margin-top: 10px; padding-bottom: 10px; }
+    .thanks { font-weight: 900; letter-spacing: 1px; text-transform: uppercase; font-size: 14px; }
+    .fine { font-size: 11px; opacity: 0.9; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -225,6 +147,11 @@ function buildReceiptHtml(receipt) {
         : ''
     }
     ${
+      createdAtText
+        ? `<div class="meta"><span class="k">This date reflects</span>: <span class="v">the time the transaction was processed</span></div>`
+        : ''
+    }
+    ${
       corp
         ? `<div class="meta"><span class="k">Corporate</span>: <span class="v">${escapeHtml(
             corp,
@@ -233,7 +160,7 @@ function buildReceiptHtml(receipt) {
     }
     ${
       store
-        ? `<div class="meta"><span class="k">Store</span>: <span class="v">${escapeHtml(
+        ? `<div class="meta"><span class="k">Location</span>: <span class="v">${escapeHtml(
             store,
           )}</span></div>`
         : ''
@@ -301,7 +228,7 @@ async function readLastReceipt() {
   }
 }
 
-export default function ReceiptScreen({receipt, onDone, onLogout, onBack}) {
+export default function ReceiptScreen({receipt, onDone, onBack}) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
 
   useEffect(() => {
@@ -336,10 +263,6 @@ export default function ReceiptScreen({receipt, onDone, onLogout, onBack}) {
                 <Text style={styles.back}>Back</Text>
               </TouchableOpacity>
             )}
-
-            <TouchableOpacity onPress={onLogout}>
-              <Text style={styles.logout}>Logout</Text>
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -376,7 +299,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {color: 'white', fontSize: 22, fontWeight: '800'},
-  logout: {fontSize: 14, color: GOLD, fontWeight: '800'},
   back: {fontSize: 14, color: '#9ca3af', fontWeight: '800'},
 
   printBtn: {

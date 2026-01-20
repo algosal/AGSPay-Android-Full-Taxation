@@ -7,6 +7,7 @@ import Login from './components/Login/Login.jsx';
 import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen.js';
 import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen.js';
 import TerminalScreen from './components/Terminal/TerminalScreen.jsx';
+import AmountEntryScreen from './components/Terminal/AmountEntryScreen.jsx';
 import TipScreen from './components/Tip/TipScreen.js';
 import CheckoutScreen from './components/Checkout/CheckoutScreen.js';
 import ReceiptScreen from './components/Receipt/ReceiptScreen.js';
@@ -68,7 +69,7 @@ export default function App() {
   const [selection, setSelection] = useState(null);
   const [pickedCorporate, setPickedCorporate] = useState(null);
 
-  // terminal -> tip -> checkout -> receipt
+  // terminal -> amount -> tip -> checkout -> receipt
   const [step, setStep] = useState('terminal');
 
   // payloads between steps
@@ -76,6 +77,9 @@ export default function App() {
   const [tipPayload, setTipPayload] = useState(null);
   const [checkoutPayload, setCheckoutPayload] = useState(null);
   const [receipt, setReceipt] = useState(null);
+
+  // ✅ NEW: subtotal input stored centrally so AmountEntryScreen can edit it
+  const [subtotalInput, setSubtotalInput] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -124,6 +128,7 @@ export default function App() {
       setCheckoutPayload(null);
       setReceipt(null);
       setPaymentNote('');
+      setSubtotalInput('');
       setStep('terminal');
     }
   };
@@ -203,6 +208,7 @@ export default function App() {
     setTipPayload(null);
     setCheckoutPayload(null);
     setPaymentNote('');
+    // keep subtotalInput as-is so they can do another sale quickly if desired
     setStep('terminal');
   };
 
@@ -230,6 +236,18 @@ export default function App() {
         onSelectionCompleted={handleStoreSelectionCompleted}
         onBack={() => setStep('corporate')}
         onLogout={handleLogout}
+      />
+    );
+  } else if (step === 'amount') {
+    // ✅ NEW: Full-screen keypad screen
+    content = (
+      <AmountEntryScreen
+        initialValue={subtotalInput}
+        onBack={() => setStep('terminal')}
+        onDone={newValue => {
+          setSubtotalInput(String(newValue || ''));
+          setStep('terminal');
+        }}
       />
     );
   } else if (step === 'tip') {
@@ -289,6 +307,10 @@ export default function App() {
           setStep('corporate');
         }}
         onGoToTip={handleGoToTip}
+        // ✅ NEW props for amount flow
+        subtotalInput={subtotalInput}
+        setSubtotalInput={setSubtotalInput}
+        onEnterAmount={() => setStep('amount')}
       />
     );
   }
