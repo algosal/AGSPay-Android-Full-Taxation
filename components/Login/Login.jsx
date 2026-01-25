@@ -77,6 +77,18 @@ function resolveOwnerId(payload) {
   return null;
 }
 
+async function storeTokenAndSession({token, sessionObj}) {
+  // Token should be stored as a plain string (never JSON.parse it later)
+  await Keychain.setGenericPassword('token', token, {
+    service: 'agpayAuthToken',
+  });
+
+  // Session can be JSON (safe to JSON.parse later)
+  await Keychain.setGenericPassword('session', JSON.stringify(sessionObj), {
+    service: 'agpaySession',
+  });
+}
+
 export default function Login({onLoginSuccess}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -85,10 +97,25 @@ export default function Login({onLoginSuccess}) {
 
   const handleContinue = async () => {
     try {
-      const cleanEmail = email.trim().toLowerCase();
+      const cleanEmail = String(email || '')
+        .trim()
+        .toLowerCase();
+      const cleanPassword = String(password || ''); // DO NOT lowercase passwords.
 
-      if (!cleanEmail || !password) {
+      if (!cleanEmail || !cleanPassword) {
         Alert.alert('Missing info', 'Enter email and password.');
+        return;
+      }
+
+      if (typeof onLoginSuccess !== 'function') {
+        console.log(
+          'Login error: onLoginSuccess is not a function:',
+          onLoginSuccess,
+        );
+        Alert.alert(
+          'App config error',
+          'onLoginSuccess not passed from App.js.',
+        );
         return;
       }
 
@@ -100,7 +127,7 @@ export default function Login({onLoginSuccess}) {
       const resp = await fetch(LOGIN_URL, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email: cleanEmail, password}),
+        body: JSON.stringify({email: cleanEmail, password: cleanPassword}),
       });
 
       const rawText = await resp.text();
@@ -148,12 +175,11 @@ export default function Login({onLoginSuccess}) {
         accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
       });
 
-      // 3) Store auth context separately (does not affect your existing Keychain usage)
+      // 3) Store auth context separately (keeps your existing behavior)
       const authSession = {
         email: cleanEmail,
         ownerId,
         token,
-        // keep the full normalized payload for debugging/forward compatibility
         profile: normalized,
         savedAt: Date.now(),
       };
@@ -164,9 +190,17 @@ export default function Login({onLoginSuccess}) {
         JSON.stringify(authSession),
       );
 
-      console.log('LOGIN => Keychain saved: generic session + agpayAuth');
+      // 4) Add two safe stores that eliminate the “JSON Parse error: Unexpected character”
+      //    - token stored as plain string in service agpayAuthToken
+      //    - session stored as JSON in service agpaySession
+      await storeTokenAndSession({token, sessionObj: authSession});
 
-      onLoginSuccess();
+      console.log(
+        'LOGIN => Keychain saved: generic session + agpayAuth + agpayAuthToken + agpaySession',
+      );
+
+      // Pass normalized payload upward so App.js can store it / route correctly
+      onLoginSuccess(normalized);
     } catch (e) {
       console.log('Login error:', e);
       Alert.alert('Error', String(e?.message || e));
@@ -195,7 +229,7 @@ export default function Login({onLoginSuccess}) {
             autoCapitalize="none"
             autoCorrect={false}
             value={email}
-            onChangeText={t => setEmail(t.toLowerCase())}
+            onChangeText={t => setEmail(String(t || '').toLowerCase())}
           />
         </View>
 
@@ -208,7 +242,8 @@ export default function Login({onLoginSuccess}) {
               placeholder="••••••••"
               placeholderTextColor="#6b7280"
               secureTextEntry={!showPassword}
-              autoCapitalize="none"
+              autoCapitalize="none" // prevents initial caps
+              autoCorrect={false}
               value={password}
               onChangeText={setPassword}
             />

@@ -1,61 +1,111 @@
-import React, {forwardRef, useImperativeHandle, useMemo, useState} from 'react';
-import {View, Text, Alert, StyleSheet, ActivityIndicator} from 'react-native';
-import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
+// components/PaymentTerminal.js
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
+import {Alert, PermissionsAndroid, Platform} from 'react-native';
 import * as Keychain from 'react-native-keychain';
+import {
+  useStripeTerminal,
+  TapZoneIndicator,
+  DarkMode,
+} from '@stripe/stripe-terminal-react-native';
 
-function pretty(label, obj) {
+const CREATE_INTENT_URL =
+  'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
+
+// ✅ set true temporarily for simulation
+const FORCE_SIMULATED_READER = false;
+
+// ✅ Your LIVE Location ID
+const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
+
+async function requestLocationPermissionIfNeeded() {
+  if (Platform.OS !== 'android') return true;
+
+  const granted = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    {
+      title: 'Location Permission',
+      message: 'AGPay uses location to enable Tap to Pay.',
+      buttonPositive: 'OK',
+    },
+  );
+
+  if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+    Alert.alert('Permission required', 'Location permission is required.');
+    return false;
+  }
+  return true;
+}
+
+async function readAgpayAuthToken() {
   try {
-    console.log(label, JSON.stringify(obj, null, 2));
+    const creds = await Keychain.getInternetCredentials('agpayAuth');
+    if (!creds?.password) return null;
+    const parsed = JSON.parse(creds.password);
+    return parsed?.token || null; // raw JWT
   } catch (e) {
-    console.log(label, obj);
+    console.log('readAgpayAuthToken error:', e);
+    return null;
   }
 }
 
-function summarizePI(pi) {
-  if (!pi) return null;
-  const charge0 = Array.isArray(pi.charges) ? pi.charges[0] : null;
-  return {
-    id: pi.id,
-    status: pi.status,
-    amount: pi.amount,
-    currency: pi.currency,
-    paymentMethodId: pi.paymentMethodId,
-    charge: charge0
-      ? {
-          id: charge0.id,
-          status: charge0.status,
-          amount: charge0.amount,
-          currency: charge0.currency,
-          paid: charge0.paid,
-        }
-      : null,
+async function createIntentOnBackend({amountCents, currency, metadata}) {
+  const jwt = await readAgpayAuthToken();
+
+  const payload = {
+    amount: Number(amountCents || 0),
+    currency: String(currency || 'usd'),
+    metadata: metadata || {},
   };
-}
 
-function safeStringify(value) {
+  console.log('💳 create-intent → POST:', CREATE_INTENT_URL, payload);
+
+  const resp = await fetch(CREATE_INTENT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(jwt ? {Authorization: jwt} : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await resp.text();
+  console.log('💳 create-intent → HTTP:', resp.status, text);
+
+  if (!resp.ok) throw new Error(`Create intent failed: HTTP ${resp.status}`);
+
+  let data = null;
   try {
-    return JSON.stringify(value);
-  } catch (e) {
-    try {
-      const seen = new WeakSet();
-      return JSON.stringify(value, (key, val) => {
-        if (typeof val === 'object' && val !== null) {
-          if (seen.has(val)) return '[Circular]';
-          seen.add(val);
-        }
-        return val;
-      });
-    } catch (e2) {
-      console.log('safeStringify failed:', e2);
-      return null;
-    }
+    data = JSON.parse(text);
+  } catch {
+    data = null;
   }
+
+  const clientSecret =
+    data?.client_secret ||
+    data?.clientSecret ||
+    data?.payment_intent?.client_secret ||
+    data?.paymentIntent?.client_secret ||
+    data?.paymentIntent?.clientSecret;
+
+  if (!clientSecret) {
+    console.log('❌ create-intent missing client_secret:', data);
+    throw new Error('Missing client_secret from create-intent response');
+  }
+
+  return {clientSecret, raw: data};
 }
 
 async function readAgpaySelection() {
   try {
     const creds = await Keychain.getInternetCredentials('agpaySelection');
-    if (!creds || !creds.password) return null;
+    if (!creds?.password) return null;
     return JSON.parse(creds.password);
   } catch (e) {
     console.log('readAgpaySelection error:', e);
@@ -63,421 +113,359 @@ async function readAgpaySelection() {
   }
 }
 
-async function saveLastReceipt(receiptPayload) {
-  try {
-    if (!receiptPayload) return;
-    await Keychain.setInternetCredentials(
-      'agpayLastReceipt',
-      'receipt',
-      JSON.stringify(receiptPayload),
-    );
-    console.log('✅ Saved agpayLastReceipt');
-  } catch (e) {
-    console.log('saveLastReceipt error:', e);
-  }
-}
-
-async function readJwtToken() {
-  const candidates = ['userProfile', 'agpayAuth', 'authToken', 'session'];
-
-  for (const service of candidates) {
-    try {
-      const creds = await Keychain.getInternetCredentials(service);
-      if (!creds || !creds.password) continue;
-
-      let parsed = null;
-      try {
-        parsed = JSON.parse(creds.password);
-      } catch {
-        if (
-          typeof creds.password === 'string' &&
-          creds.password.startsWith('eyJ')
-        ) {
-          return creds.password;
-        }
-        continue;
-      }
-
-      if (parsed?.token && typeof parsed.token === 'string')
-        return parsed.token;
-      if (parsed?.jwt && typeof parsed.jwt === 'string') return parsed.jwt;
-      if (parsed?.accessToken && typeof parsed.accessToken === 'string')
-        return parsed.accessToken;
-    } catch (e) {
-      console.log(`readJwtToken error for service=${service}:`, e);
-    }
-  }
-
-  return null;
-}
-
-const SAVE_TX_URL =
-  'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
-
-async function saveTxToBackend(finalTx) {
-  try {
-    const token = await readJwtToken();
-    if (!token) {
-      console.log(
-        '❌ No JWT token found in Keychain. Cannot save transaction.',
-      );
-      Alert.alert('Auth Missing', 'No JWT token found. Please log in again.');
-      return {ok: false, status: 0, error: 'Missing JWT'};
-    }
-
-    pretty('SAVE_TX finalTx =>', finalTx);
-
-    const resp = await fetch(SAVE_TX_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+const PaymentTerminal = forwardRef(
+  (
+    {
+      onReaderStatusChange,
+      onPaymentSuccess,
+      debugMeta,
+      breakdown,
+      amountCents = 0,
+      currency = 'usd',
+      amountLabel,
+    },
+    ref,
+  ) => {
+    const {
+      initialize,
+      discoverReaders,
+      connectReader,
+      disconnectReader,
+      connectedReader,
+      discoveredReaders,
+      cancelDiscovering,
+      setTapToPayUxConfiguration,
+      supportsReadersOfType,
+      setSimulatedCard,
+      retrievePaymentIntent,
+      collectPaymentMethod,
+      confirmPaymentIntent,
+    } = useStripeTerminal({
+      onUpdateDiscoveredReaders: readers => {
+        console.log('onUpdateDiscoveredReaders:', readers);
       },
-      body: JSON.stringify(finalTx),
     });
 
-    const raw = await resp.text();
-    console.log('SAVE_TX HTTP status:', resp.status);
+    const [terminalReady, setTerminalReady] = useState(false);
+    const [statusLine, setStatusLine] = useState('Not initialized');
 
-    if (!resp.ok) {
-      console.log('SAVE_TX failed:', raw);
-      return {ok: false, status: resp.status, error: raw};
-    }
+    const latestReadersRef = useRef([]);
+    const tapToPaySupportedRef = useRef(null);
 
-    let saved = null;
-    try {
-      saved = raw ? JSON.parse(raw) : null;
-    } catch {}
-
-    console.log('✅ Transaction saved to backend');
-    return {ok: true, status: resp.status, saved};
-  } catch (e) {
-    console.log('saveTxToBackend error:', e);
-    return {ok: false, status: 0, error: String(e?.message || e)};
-  }
-}
-
-function buildDescription({selection, debugMeta, amountLabel}) {
-  const parts = [];
-  const corp = selection?.corporateName || null;
-  const store = selection?.storeName || null;
-  const note = debugMeta?.note || null;
-
-  if (corp && store) parts.push(`${corp} / ${store}`);
-  else if (corp) parts.push(String(corp));
-  else if (store) parts.push(String(store));
-
-  if (amountLabel) parts.push(String(amountLabel));
-  if (note && String(note).trim()) parts.push(String(note).trim());
-
-  const s = parts.join(' · ').replace(/\s+/g, ' ').trim();
-  return s.length > 250 ? s.slice(0, 249) + '…' : s;
-}
-
-const PaymentTerminal = forwardRef(function PaymentTerminal(
-  {
-    amountCents,
-    amountLabel,
-    currency = 'usd',
-    theme,
-    debugMeta,
-    breakdown,
-    onPaymentSuccess,
-  },
-  ref,
-) {
-  const terminal = useStripeTerminal();
-  const {
-    connectedReader,
-    collectPaymentMethod,
-    retrievePaymentIntent,
-    confirmPaymentIntent,
-  } = terminal;
-
-  const [loading, setLoading] = useState(false);
-
-  const CREATE_INTENT_URL =
-    'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
-
-  const t = useMemo(
-    () => ({
-      text: theme?.text ?? '#ffffff',
-      muted: theme?.muted ?? '#9ca3af',
-      danger: theme?.danger ?? '#ef4444',
-    }),
-    [theme],
-  );
-
-  function resolveClientSecretFromApi(payload) {
-    if (!payload) return null;
-    if (payload.client_secret) return payload.client_secret;
-    if (payload.clientSecret) return payload.clientSecret;
-
-    if (typeof payload.body === 'string') {
-      try {
-        const inner = JSON.parse(payload.body);
-        return inner?.client_secret || inner?.clientSecret || null;
-      } catch (e) {
-        console.log('resolveClientSecret: parse error', e);
+    useEffect(() => {
+      if (Array.isArray(discoveredReaders)) {
+        latestReadersRef.current = discoveredReaders;
       }
-    }
+    }, [discoveredReaders]);
 
-    if (payload.body && typeof payload.body === 'object') {
-      return payload.body.client_secret || payload.body.clientSecret || null;
-    }
+    const publishReaderStatus = useCallback(
+      next => {
+        onReaderStatusChange?.(next);
+      },
+      [onReaderStatusChange],
+    );
 
-    return null;
-  }
+    const ensureInit = useCallback(async () => {
+      if (terminalReady) return true;
 
-  const startCardPayment = async () => {
-    try {
-      if (loading) return;
+      console.log('Stripe Terminal → initialize() start');
+      setStatusLine('Initializing Stripe Terminal…');
 
-      if (!connectedReader) {
-        Alert.alert('No reader connected', 'Connect Tap to Pay first.');
-        return;
-      }
+      const res = await initialize();
+      console.log('Stripe Terminal → initialize() result:', res);
 
-      if (!Number.isFinite(amountCents) || amountCents <= 0) {
-        Alert.alert(
-          'Enter amount',
-          'Please enter an amount greater than $0.00.',
+      if (res?.error) {
+        setStatusLine(`Init failed: ${res.error?.message || res.error?.code}`);
+        throw new Error(
+          res.error?.message || 'Stripe Terminal initialize failed',
         );
-        return;
       }
-
-      setLoading(true);
-
-      console.log('================ AGPAY CARD START ================');
-      console.log('CHARGING FULL amountCents =', amountCents);
-      pretty('BREAKDOWN USED:', breakdown);
-
-      const selection = await readAgpaySelection();
-      const description = buildDescription({selection, debugMeta, amountLabel});
-
-      const metadata = {
-        ownerId: selection?.ownerId || '',
-        corporateRef: selection?.corporateRef || '',
-        corporateName: selection?.corporateName || '',
-        storeRef: selection?.storeRef || '',
-        storeName: selection?.storeName || '',
-        note: debugMeta?.note || '',
-      };
-
-      const createPayload = {
-        amount: amountCents, // ✅ MUST be full total
-        currency,
-        description,
-        metadata,
-      };
-
-      pretty('Create-intent payload:', createPayload);
-
-      const resp = await fetch(CREATE_INTENT_URL, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(createPayload),
-      });
-
-      const rawText = await resp.text();
-      console.log('Create-intent HTTP status:', resp.status);
-
-      if (!resp.ok) {
-        console.log('Create-intent failed:', rawText);
-        Alert.alert('Create failed', `HTTP ${resp.status}. Check logs.`);
-        return;
-      }
-
-      let piData = null;
-      try {
-        piData = rawText ? JSON.parse(rawText) : null;
-      } catch {}
-
-      const clientSecret = resolveClientSecretFromApi(piData);
-      if (!clientSecret) {
-        Alert.alert('Error', 'Backend did not return client_secret.');
-        return;
-      }
-
-      const {paymentIntent: retrievedPI, error: retrieveError} =
-        await retrievePaymentIntent(clientSecret);
-
-      pretty('retrievePaymentIntent:', {
-        error: retrieveError
-          ? {code: retrieveError.code, message: retrieveError.message}
-          : null,
-        paymentIntent: summarizePI(retrievedPI),
-      });
-
-      if (retrieveError) {
-        Alert.alert(
-          'Retrieve failed',
-          retrieveError.message || 'Retrieve failed',
-        );
-        return;
-      }
-
-      Alert.alert('Ready', 'Tap a card on the phone to collect payment.');
-
-      const {paymentIntent: collectedPI, error: collectError} =
-        await collectPaymentMethod({paymentIntent: retrievedPI});
-
-      pretty('collectPaymentMethod:', {
-        error: collectError
-          ? {code: collectError.code, message: collectError.message}
-          : null,
-        paymentIntent: summarizePI(collectedPI),
-      });
-
-      if (collectError) {
-        Alert.alert('Collect failed', collectError.message || 'Collect failed');
-        return;
-      }
-
-      const {paymentIntent: confirmedPI, error: confirmError} =
-        await confirmPaymentIntent({paymentIntent: collectedPI});
-
-      pretty('confirmPaymentIntent:', {
-        error: confirmError
-          ? {code: confirmError.code, message: confirmError.message}
-          : null,
-        paymentIntent: summarizePI(confirmedPI),
-      });
-
-      if (confirmError) {
-        Alert.alert('Confirm failed', confirmError.message || 'Confirm failed');
-        return;
-      }
-
-      console.log('================ AGPAY CARD END ==================');
-
-      let receiptPayload = null;
 
       try {
-        const charge0 =
-          Array.isArray(confirmedPI?.charges) && confirmedPI.charges.length
-            ? confirmedPI.charges[0]
-            : null;
-
-        const chargeId = charge0?.id || confirmedPI?.charge?.id || null;
-
-        const brand =
-          charge0?.payment_method_details?.card_present?.brand ||
-          charge0?.payment_method_details?.card?.brand ||
-          null;
-
-        const last4 =
-          charge0?.payment_method_details?.card_present?.last4 ||
-          charge0?.payment_method_details?.card?.last4 ||
-          null;
-
-        const stripeReturnedObject = safeStringify(confirmedPI);
-
-        const finalTx = {
-          ownerId: selection?.ownerId || null,
-          corporateRef: selection?.corporateRef || null,
-          corporateName: selection?.corporateName || null,
-          storeRef: selection?.storeRef || null,
-          storeName: selection?.storeName || null,
-
-          stripe: {
-            paymentIntentId: confirmedPI?.id || null,
-            status: confirmedPI?.status || null,
-            amount: confirmedPI?.amount || null,
-            currency: confirmedPI?.currency || null,
-            paymentMethodId: confirmedPI?.paymentMethodId || null,
-            chargeId,
+        await setTapToPayUxConfiguration({
+          tapZone: {
+            tapZoneIndicator: TapZoneIndicator.FRONT,
+            tapZonePosition: {xBias: 0.5, yBias: 0.3},
           },
-
-          stripeReturnedObject: stripeReturnedObject || null,
-          amountLabel: amountLabel || null,
-          debugMeta: debugMeta || null,
-          descriptionSentToStripe: description || null,
-          metadataSentToStripe: metadata || null,
-          clientEpochMs: Date.now(),
-        };
-
-        await saveTxToBackend(finalTx);
-
-        receiptPayload = {
-          paymentMethod: 'CARD',
-          createdAtText: new Date().toLocaleString(),
-          note: debugMeta?.note || '',
-
-          corporateName: selection?.corporateName || '',
-          storeName: selection?.storeName || '',
-
-          currency: currency || null,
-          paymentId: finalTx?.stripe?.paymentIntentId || null,
-          chargeId: finalTx?.stripe?.chargeId || null,
-          brand,
-          last4,
-
-          // ✅ MUST use breakdown
-          subtotalCents: Number(breakdown?.subtotalCents ?? 0),
-          taxCents: Number(breakdown?.taxCents ?? 0),
-          albaFeeCents: Number(breakdown?.albaFeeCents ?? 0),
-          tipCents: Number(breakdown?.tipCents ?? 0),
-
-          totalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
-          grandTotalCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
-
-          amountCents: Number(breakdown?.totalCents ?? amountCents ?? 0),
-          amountText: amountLabel || null,
-        };
-
-        await saveLastReceipt(receiptPayload);
+          darkMode: DarkMode.DARK,
+        });
       } catch (e) {
-        console.log('Final TX receipt/save error:', e);
+        console.log('setTapToPayUxConfiguration error:', e);
       }
 
-      Alert.alert('Success', `Card payment completed: ${amountLabel || ''}`);
+      try {
+        const r = await supportsReadersOfType({
+          deviceType: 'tapToPay',
+          discoveryMethod: 'tapToPay',
+        });
+        tapToPaySupportedRef.current = r?.supported ?? null;
+      } catch (e) {
+        console.log('supportsReadersOfType error:', e);
+        tapToPaySupportedRef.current = null;
+      }
 
-      onPaymentSuccess?.(receiptPayload || {amountText: amountLabel || null});
-    } catch (err) {
-      console.log('startCardPayment unexpected error:', err);
-      Alert.alert('Error', String(err?.message || err));
-    } finally {
-      setLoading(false);
-    }
-  };
+      setTerminalReady(true);
+      setStatusLine('Initialized');
+      return true;
+    }, [
+      initialize,
+      setTapToPayUxConfiguration,
+      supportsReadersOfType,
+      terminalReady,
+    ]);
 
-  useImperativeHandle(ref, () => ({
-    startCardPayment,
-    isBusy: () => loading,
-  }));
+    const connectReaderFlow = useCallback(async () => {
+      try {
+        await ensureInit();
 
-  return (
-    <View style={styles.container}>
-      {loading ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" />
-          <Text style={[styles.loadingText, {color: t.text}]}>
-            Processing card payment…
-          </Text>
-        </View>
-      ) : null}
+        const ok = await requestLocationPermissionIfNeeded();
+        if (!ok) return;
 
-      {!connectedReader && (
-        <Text style={[styles.helper, {color: t.muted}]}>
-          Connect Tap to Pay before taking card payments.
-        </Text>
-      )}
-    </View>
-  );
-});
+        const supported = tapToPaySupportedRef.current;
+        if (supported === false && !FORCE_SIMULATED_READER) {
+          Alert.alert(
+            'Not supported',
+            'This device does not support Tap to Pay.',
+          );
+          return;
+        }
+
+        if (!FORCE_SIMULATED_READER) {
+          if (
+            !LIVE_LOCATION_ID ||
+            !String(LIVE_LOCATION_ID).startsWith('tml_')
+          ) {
+            Alert.alert(
+              'Location ID missing',
+              'LIVE_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+            );
+            return;
+          }
+        }
+
+        setStatusLine('Discovering Tap to Pay…');
+
+        const {error: discErr} = await discoverReaders({
+          discoveryMethod: 'tapToPay',
+          simulated: !!FORCE_SIMULATED_READER,
+        });
+
+        if (discErr) {
+          console.log('discoverReaders error:', discErr);
+          throw new Error(discErr?.message || 'discoverReaders failed');
+        }
+
+        const readers = latestReadersRef.current || [];
+        console.log('✅ discovered tapToPay readers:', readers);
+
+        const chosen = FORCE_SIMULATED_READER
+          ? readers[0]
+          : readers.find(r => !r?.simulated) || readers[0];
+
+        if (!chosen) {
+          Alert.alert('No reader found');
+          publishReaderStatus({connected: false, label: ''});
+          return;
+        }
+
+        if (!FORCE_SIMULATED_READER && chosen?.simulated) {
+          Alert.alert(
+            'Still simulated',
+            'SDK returned only simulated readers. Check device eligibility and Stripe config.',
+          );
+          return;
+        }
+
+        const locationIdToUse = FORCE_SIMULATED_READER
+          ? chosen.locationId
+          : LIVE_LOCATION_ID;
+
+        setStatusLine('Connecting Tap to Pay…');
+
+        const {error: connErr} = await connectReader(
+          {reader: chosen, locationId: locationIdToUse},
+          'tapToPay',
+        );
+
+        if (connErr) {
+          console.log('connectReader error:', connErr);
+          throw new Error(connErr?.message || 'connectReader failed');
+        }
+
+        if (FORCE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
+          await setSimulatedCard({number: '4242424242424242', type: 'credit'});
+        }
+
+        setStatusLine('Reader connected');
+        publishReaderStatus({
+          connected: true,
+          label:
+            chosen?.label || chosen?.serialNumber || 'Tap to Pay Connected',
+        });
+      } catch (e) {
+        console.log('connectReaderFlow error:', e);
+        setStatusLine(`Connect failed: ${String(e?.message || e)}`);
+        publishReaderStatus({connected: false, label: ''});
+        Alert.alert('Connect Failed', String(e?.message || e));
+      } finally {
+        try {
+          await cancelDiscovering();
+        } catch {}
+      }
+    }, [
+      cancelDiscovering,
+      connectReader,
+      discoverReaders,
+      ensureInit,
+      publishReaderStatus,
+      setSimulatedCard,
+    ]);
+
+    const disconnectReaderFlow = useCallback(async () => {
+      try {
+        await disconnectReader();
+        setStatusLine('Reader disconnected');
+        publishReaderStatus({connected: false, label: ''});
+      } catch (e) {
+        console.log('disconnectReaderFlow error:', e);
+        Alert.alert('Disconnect failed', String(e?.message || e));
+      }
+    }, [disconnectReader, publishReaderStatus]);
+
+    const startCardPayment = useCallback(async () => {
+      try {
+        await ensureInit();
+
+        if (!connectedReader) {
+          Alert.alert('Reader not connected', 'Connect Tap to Pay first.');
+          return;
+        }
+
+        const amt = Number(amountCents || 0);
+        if (!amt || amt < 1) {
+          Alert.alert('Invalid amount', 'Amount must be at least $0.01');
+          return;
+        }
+
+        setStatusLine('Creating PaymentIntent…');
+
+        const selection = await readAgpaySelection();
+
+        const meta = {
+          ...(debugMeta || {}),
+          corporateRef: selection?.corporateRef || '',
+          corporateName: selection?.corporateName || '',
+          storeRef: selection?.storeRef || '',
+          storeName: selection?.storeName || '',
+        };
+
+        const {clientSecret, raw} = await createIntentOnBackend({
+          amountCents: amt,
+          currency,
+          metadata: meta,
+        });
+
+        setStatusLine('Retrieving intent…');
+        const retrieved = await retrievePaymentIntent(clientSecret);
+        if (retrieved?.error) {
+          throw new Error(retrieved.error?.message || 'Retrieve intent failed');
+        }
+
+        setStatusLine('Collecting payment method…');
+        const collected = await collectPaymentMethod({
+          paymentIntent: retrieved?.paymentIntent,
+        });
+        if (collected?.error) {
+          throw new Error(
+            collected.error?.message || 'Collect payment method failed',
+          );
+        }
+
+        setStatusLine('Confirming…');
+        const confirmed = await confirmPaymentIntent({
+          paymentIntent: collected?.paymentIntent,
+        });
+        if (confirmed?.error) {
+          throw new Error(confirmed.error?.message || 'Confirm payment failed');
+        }
+
+        const pi = confirmed?.paymentIntent || {};
+        setStatusLine('Payment succeeded');
+
+        onPaymentSuccess?.({
+          method: 'CARD',
+          paymentMethod: 'CARD',
+          amountCents: amt,
+          amountText: amountLabel || `$${(amt / 100).toFixed(2)}`,
+          currency: currency || 'usd',
+          totalCents: amt,
+          grandTotalCents: amt,
+          breakdown: breakdown || null,
+          stripe: {
+            paymentIntentId: pi?.id || null,
+            status: pi?.status || null,
+            amount: pi?.amount || amt,
+            currency: pi?.currency || currency,
+          },
+          stripeReturnedObject: JSON.stringify(raw || {}),
+          createdAtText: new Date().toLocaleString(),
+        });
+      } catch (e) {
+        console.log('startCardPayment error:', e);
+        setStatusLine(`Payment failed: ${String(e?.message || e)}`);
+        Alert.alert('Payment failed', String(e?.message || e));
+      }
+    }, [
+      amountCents,
+      amountLabel,
+      breakdown,
+      collectPaymentMethod,
+      confirmPaymentIntent,
+      connectedReader,
+      currency,
+      debugMeta,
+      ensureInit,
+      onPaymentSuccess,
+      retrievePaymentIntent,
+    ]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        ensureInit,
+        connectReaderFlow,
+        disconnectReaderFlow,
+        startCardPayment,
+        isReaderConnected: () => !!connectedReader,
+        getStatusLine: () => statusLine,
+      }),
+      [
+        connectReaderFlow,
+        disconnectReaderFlow,
+        ensureInit,
+        startCardPayment,
+        connectedReader,
+        statusLine,
+      ],
+    );
+
+    useEffect(() => {
+      if (connectedReader) {
+        publishReaderStatus({
+          connected: true,
+          label:
+            connectedReader?.label ||
+            connectedReader?.serialNumber ||
+            'Tap to Pay Connected',
+        });
+      } else {
+        publishReaderStatus({connected: false, label: ''});
+      }
+    }, [connectedReader, publishReaderStatus]);
+
+    // ✅ IMPORTANT: render nothing (no duplicated UI / no debug footer)
+    return null;
+  },
+);
 
 export default PaymentTerminal;
-
-const styles = StyleSheet.create({
-  container: {marginTop: 10},
-  helper: {marginTop: 8, fontSize: 12, textAlign: 'center'},
-  loadingRow: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-  },
-  loadingText: {fontSize: 13, fontWeight: '800'},
-});

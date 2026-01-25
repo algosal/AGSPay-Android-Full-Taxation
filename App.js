@@ -1,326 +1,347 @@
-import React, {useEffect, useState} from 'react';
-import {Alert, View, ActivityIndicator} from 'react-native';
+import React, {useMemo, useRef, useState} from 'react';
+import {Alert, SafeAreaView, StatusBar, View} from 'react-native';
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
-import * as Keychain from 'react-native-keychain';
 
-import Login from './components/Login/Login.jsx';
-import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen.js';
-import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen.js';
-import TerminalScreen from './components/Terminal/TerminalScreen.jsx';
-import AmountEntryScreen from './components/Terminal/AmountEntryScreen.jsx';
-import TipScreen from './components/Tip/TipScreen.js';
-import CheckoutScreen from './components/Checkout/CheckoutScreen.js';
-import ReceiptScreen from './components/Receipt/ReceiptScreen.js';
+import Login from './components/Login/Login';
+import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen';
+import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen';
 
-const API_BASE =
-  'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe';
+import TerminalScreen from './components/Terminal/TerminalScreen';
+import AmountEntryScreen from './components/Terminal/AmountEntryScreen';
+import TipScreen from './components/Tip/TipScreen';
+import CheckoutScreen from './components/Checkout/CheckoutScreen';
+import ReceiptScreen from './components/Receipt/ReceiptScreen';
 
-async function fetchConnectionToken() {
-  const response = await fetch(`${API_BASE}/connection_token`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-  });
+import PaymentTerminal from './components/PaymentTerminal';
 
-  const data = await response.json();
+const CONNECTION_TOKEN_URL =
+  'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
-  if (typeof data?.body === 'string') {
-    const parsed = JSON.parse(data.body);
-    return parsed.secret;
-  }
+async function tokenProvider() {
+  const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
+  const text = await resp.text();
 
-  return data.secret;
-}
+  if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
 
-function safeJsonParse(s) {
+  let data = null;
   try {
-    return JSON.parse(s);
-  } catch {
-    return null;
+    data = JSON.parse(text);
+  } catch {}
+
+  let secret = data?.secret || null;
+
+  if (!secret && data?.body) {
+    try {
+      const body = JSON.parse(data.body);
+      secret = body?.secret || null;
+    } catch {}
   }
+
+  if (!secret) throw new Error('Missing connection token secret');
+  return secret;
 }
 
-async function readAgpaySelection() {
-  try {
-    const creds = await Keychain.getInternetCredentials('agpaySelection');
-    if (!creds || !creds.password) return null;
-    return safeJsonParse(creds.password);
-  } catch (e) {
-    console.log('readAgpaySelection error:', e);
-    return null;
+function normalizeLoginPayload(payload) {
+  if (payload && typeof payload === 'object' && payload.token) return payload;
+
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    typeof payload.body === 'string'
+  ) {
+    try {
+      return JSON.parse(payload.body);
+    } catch {
+      return null;
+    }
   }
+
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
-function isValidSelection(sel) {
-  return !!(sel?.ownerId && sel?.corporateRef && sel?.storeRef);
-}
-
-async function clearInternetCredential(serverName) {
-  try {
-    await Keychain.resetInternetCredentials(serverName);
-  } catch (e) {
-    console.log(`resetInternetCredentials(${serverName}) error:`, e);
-  }
+function centsToMoney(cents) {
+  return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
 export default function App() {
-  const [booting, setBooting] = useState(true);
-  const [authed, setAuthed] = useState(false);
+  const theme = useMemo(
+    () => ({
+      bg: '#020617',
+      card: '#050814',
+      text: '#ffffff',
+      muted: '#9ca3af',
+      border: '#1f2937',
+      gold: '#d4af37',
+      danger: '#ef4444',
+    }),
+    [],
+  );
 
-  const [selection, setSelection] = useState(null);
-  const [pickedCorporate, setPickedCorporate] = useState(null);
+  const paymentRef = useRef(null);
 
-  // terminal -> amount -> tip -> checkout -> receipt
-  const [step, setStep] = useState('terminal');
+  const [screen, setScreen] = useState('LOGIN');
+  const [session, setSession] = useState(null);
 
-  // payloads between steps
   const [paymentNote, setPaymentNote] = useState('');
-  const [tipPayload, setTipPayload] = useState(null);
-  const [checkoutPayload, setCheckoutPayload] = useState(null);
+  const [chargeData, setChargeData] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
-  // ✅ NEW: subtotal input stored centrally so AmountEntryScreen can edit it
-  const [subtotalInput, setSubtotalInput] = useState('');
+  const [readerStatus, setReaderStatus] = useState({
+    connected: false,
+    label: '',
+  });
+  const [isReaderBusy, setIsReaderBusy] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        setBooting(true);
-        const creds = await Keychain.getGenericPassword();
-        const isAuthed = !!creds;
-        setAuthed(isAuthed);
+  const loginSuccessHandledRef = useRef(false);
 
-        if (!isAuthed) {
-          setStep('terminal');
-          return;
-        }
-
-        const sel = await readAgpaySelection();
-        const valid = isValidSelection(sel) ? sel : null;
-        setSelection(valid);
-
-        if (!valid) setStep('corporate');
-        else setStep('terminal');
-      } catch (e) {
-        console.log('Boot error:', e);
-        setAuthed(false);
-        setStep('terminal');
-      } finally {
-        setBooting(false);
-      }
-    })();
-  }, []);
-
-  const handleLogout = async () => {
-    try {
-      await Keychain.resetGenericPassword();
-      await clearInternetCredential('agpayAuth');
-      await clearInternetCredential('agpaySelection');
-      await clearInternetCredential('agpayLastTx');
-      await clearInternetCredential('agpayLastReceipt');
-    } catch (e) {
-      console.log('Logout error:', e);
-      Alert.alert('Logout error', String(e?.message || e));
-    } finally {
-      setAuthed(false);
-      setSelection(null);
-      setPickedCorporate(null);
-      setTipPayload(null);
-      setCheckoutPayload(null);
-      setReceipt(null);
-      setPaymentNote('');
-      setSubtotalInput('');
-      setStep('terminal');
-    }
-  };
-
-  const handleLoginSuccess = async () => {
-    setAuthed(true);
-
-    const sel = await readAgpaySelection();
-    const valid = isValidSelection(sel) ? sel : null;
-    setSelection(valid);
-
-    if (!valid) setStep('corporate');
-    else setStep('terminal');
-  };
-
-  const handleCorporatePicked = corp => {
-    setPickedCorporate(corp);
-    setStep('store');
-  };
-
-  const handleStoreSelectionCompleted = async () => {
-    const sel = await readAgpaySelection();
-    const valid = isValidSelection(sel) ? sel : null;
-    setSelection(valid);
-    if (!valid) {
-      Alert.alert('Selection error', 'Store selection did not save correctly.');
-      setStep('corporate');
-      return;
-    }
-    setStep('terminal');
-  };
-
-  // ✅ Terminal -> Tip (carry full breakdown)
-  const handleGoToTip = payloadFromTerminal => {
-    console.log('✅ Terminal -> Tip payload:', payloadFromTerminal);
-    setTipPayload(payloadFromTerminal);
-    setStep('tip');
-  };
-
-  // ✅ Tip -> Checkout (carry breakdown + tip)
-  const handleTipDone = payloadFromTip => {
-    console.log('✅ Tip -> Checkout payload:', payloadFromTip);
-
-    setCheckoutPayload({
-      method: payloadFromTip?.method, // CASH or CARD
-      currency: payloadFromTip?.currency || tipPayload?.currency || 'usd',
-
-      paymentNote: tipPayload?.paymentNote || paymentNote || '',
-      corporateName: selection?.corporateName || '',
-      storeName: selection?.storeName || '',
-
-      // ✅ REQUIRED breakdown
-      subtotalCents: Number(payloadFromTip?.subtotalCents || 0),
-      taxCents: Number(payloadFromTip?.taxCents || 0),
-      albaFeeCents: Number(payloadFromTip?.albaFeeCents || 0),
-
-      // ✅ REQUIRED tip
-      tipCents: Number(payloadFromTip?.tipCents || 0),
-
-      // optional UI
-      grandTotalCents: Number(payloadFromTip?.grandTotalCents || 0),
-      grandTotalLabel: payloadFromTip?.grandTotalLabel || '',
-    });
-
-    setStep('checkout');
-  };
-
-  // ✅ Checkout -> Receipt
-  const handlePaid = receiptPayload => {
-    console.log('✅ PAID => receipt:', receiptPayload);
-    setReceipt(receiptPayload || {});
-    setStep('receipt');
-  };
-
-  const handleReceiptDone = () => {
-    setReceipt(null);
-    setTipPayload(null);
-    setCheckoutPayload(null);
-    setPaymentNote('');
-    // keep subtotalInput as-is so they can do another sale quickly if desired
-    setStep('terminal');
-  };
-
-  let content = null;
-
-  if (booting) {
-    content = (
-      <View style={{flex: 1, alignItems: 'center', justifyContent: 'center'}}>
-        <ActivityIndicator size="large" />
-      </View>
-    );
-  } else if (!authed) {
-    content = <Login onLoginSuccess={handleLoginSuccess} />;
-  } else if (step === 'corporate') {
-    content = (
-      <CorporateSelectScreen
-        onCorporatePicked={handleCorporatePicked}
-        onLogout={handleLogout}
-      />
-    );
-  } else if (step === 'store') {
-    content = (
-      <StoreSelectScreen
-        corporate={pickedCorporate}
-        onSelectionCompleted={handleStoreSelectionCompleted}
-        onBack={() => setStep('corporate')}
-        onLogout={handleLogout}
-      />
-    );
-  } else if (step === 'amount') {
-    // ✅ NEW: Full-screen keypad screen
-    content = (
-      <AmountEntryScreen
-        initialValue={subtotalInput}
-        onBack={() => setStep('terminal')}
-        onDone={newValue => {
-          setSubtotalInput(String(newValue || ''));
-          setStep('terminal');
-        }}
-      />
-    );
-  } else if (step === 'tip') {
-    content = (
-      <TipScreen
-        // ✅ MUST come from TerminalScreen breakdown
-        subtotalCents={tipPayload?.subtotalCents}
-        taxCents={tipPayload?.taxCents}
-        albaFeeCents={tipPayload?.albaFeeCents}
-        baseTotalCents={tipPayload?.baseTotalCents}
-        baseTotalLabel={tipPayload?.baseTotalLabel}
-        currency={tipPayload?.currency || 'usd'}
-        paymentNote={tipPayload?.paymentNote || paymentNote || ''}
-        corporateName={selection?.corporateName || ''}
-        storeName={selection?.storeName || ''}
-        onBack={() => setStep('terminal')}
-        onDone={handleTipDone}
-      />
-    );
-  } else if (step === 'checkout') {
-    content = (
-      <CheckoutScreen
-        method={checkoutPayload?.method}
-        currency={checkoutPayload?.currency || 'usd'}
-        paymentNote={checkoutPayload?.paymentNote || ''}
-        corporateName={checkoutPayload?.corporateName || ''}
-        storeName={checkoutPayload?.storeName || ''}
-        // ✅ REQUIRED for correct total charge
-        subtotalCents={checkoutPayload?.subtotalCents || 0}
-        taxCents={checkoutPayload?.taxCents || 0}
-        albaFeeCents={checkoutPayload?.albaFeeCents || 0}
-        tipCents={checkoutPayload?.tipCents || 0}
-        onPaid={handlePaid}
-        onBack={() => setStep('tip')}
-        onLogout={handleLogout}
-      />
-    );
-  } else if (step === 'receipt') {
-    content = (
-      <ReceiptScreen
-        receipt={receipt}
-        onBack={() => setStep('checkout')}
-        onDone={handleReceiptDone}
-        onLogout={handleLogout}
-      />
-    );
-  } else {
-    // terminal
-    content = (
-      <TerminalScreen
-        paymentNote={paymentNote}
-        setPaymentNote={setPaymentNote}
-        onLogout={handleLogout}
-        onChangeStoreRequested={() => {
-          setPickedCorporate(null);
-          setSelection(null);
-          setStep('corporate');
-        }}
-        onGoToTip={handleGoToTip}
-        // ✅ NEW props for amount flow
-        subtotalInput={subtotalInput}
-        setSubtotalInput={setSubtotalInput}
-        onEnterAmount={() => setStep('amount')}
-      />
-    );
+  function go(next) {
+    console.log('🧭 NAV =>', next);
+    setScreen(next);
   }
 
+  const handleLoginSuccess = payloadFromLogin => {
+    try {
+      if (loginSuccessHandledRef.current) return;
+
+      const normalized = normalizeLoginPayload(payloadFromLogin);
+      const token = normalized?.token || null;
+
+      if (!token) {
+        Alert.alert('Login failed', 'Missing token in login response.');
+        return;
+      }
+
+      loginSuccessHandledRef.current = true;
+
+      setSession({
+        token,
+        ownerId: normalized?.profile?.userId || normalized?.ownerId || null,
+        profile: normalized?.profile || null,
+      });
+
+      go('CORP');
+    } catch (e) {
+      Alert.alert('Login failed', String(e?.message || e));
+    }
+  };
+
+  const handleLogout = () => {
+    loginSuccessHandledRef.current = false;
+    setSession(null);
+    setReceipt(null);
+    setChargeData(null);
+    setPaymentNote('');
+    setReaderStatus({connected: false, label: ''});
+    setIsReaderBusy(false);
+    go('LOGIN');
+  };
+
+  // Amount -> chargeData subtotal
+  const handleAmountDone = payload => {
+    const subtotalCents = Number(payload?.amountCents || 0);
+
+    setChargeData({
+      method: 'CARD', // default; TipScreen can set CASH
+      currency: 'usd',
+      subtotalCents,
+      taxCents: 0,
+      albaFeeCents: 0,
+      tipCents: 0,
+      totalCents: subtotalCents,
+      totalLabel: centsToMoney(subtotalCents),
+      paymentNote: paymentNote || '',
+    });
+
+    go('TIP');
+  };
+
+  // TipScreen returns payload with method and totals (your TipScreen does that already)
+  const handleTipDone = tipPayload => {
+    setChargeData(tipPayload);
+    go('CHECKOUT');
+  };
+
+  const handleCheckoutConfirm = confirmedData => {
+    setChargeData(confirmedData);
+    go('TERMINAL');
+  };
+
+  const handlePaymentSuccess = receiptPayload => {
+    setReceipt(receiptPayload || null);
+    go('RECEIPT');
+  };
+
+  const handleCashReceipt = () => {
+    const amt = Number(chargeData?.totalCents || 0);
+    if (!amt || amt < 1) {
+      Alert.alert('No amount', 'Enter an amount first.');
+      return;
+    }
+
+    setReceipt({
+      method: 'CASH',
+      paymentMethod: 'CASH',
+      amountCents: amt,
+      amountText: chargeData?.totalLabel || centsToMoney(amt),
+      currency: chargeData?.currency || 'usd',
+      totalCents: amt,
+      grandTotalCents: amt,
+      breakdown: chargeData || null,
+      createdAtText: new Date().toLocaleString(),
+    });
+
+    go('RECEIPT');
+  };
+
+  const content = (() => {
+    if (screen === 'LOGIN') {
+      return <Login theme={theme} onLoginSuccess={handleLoginSuccess} />;
+    }
+
+    if (screen === 'CORP') {
+      return (
+        <CorporateSelectScreen
+          theme={theme}
+          onLogout={handleLogout}
+          onCorporatePicked={() => go('STORE')}
+        />
+      );
+    }
+
+    if (screen === 'STORE') {
+      return (
+        <StoreSelectScreen
+          theme={theme}
+          onBack={() => go('CORP')}
+          onLogout={handleLogout}
+          onStorePicked={() => go('TERMINAL')}
+        />
+      );
+    }
+
+    if (screen === 'TERMINAL') {
+      return (
+        <TerminalScreen
+          paymentNote={paymentNote}
+          setPaymentNote={setPaymentNote}
+          onBackToStoreSelect={() => go('STORE')}
+          onGoToTip={() => go('AMOUNT')}
+          readerStatus={readerStatus}
+          isReaderBusy={isReaderBusy}
+          chargeData={chargeData}
+          onCashReceipt={handleCashReceipt}
+          onConnectReader={async () => {
+            if (!paymentRef.current?.connectReaderFlow) {
+              Alert.alert('Missing', 'PaymentTerminal ref not ready.');
+              return;
+            }
+            setIsReaderBusy(true);
+            try {
+              await paymentRef.current.connectReaderFlow();
+            } finally {
+              setIsReaderBusy(false);
+            }
+          }}
+          onDisconnectReader={async () => {
+            if (!paymentRef.current?.disconnectReaderFlow) return;
+            setIsReaderBusy(true);
+            try {
+              await paymentRef.current.disconnectReaderFlow();
+            } finally {
+              setIsReaderBusy(false);
+            }
+          }}
+          onChargeCard={async () => {
+            if (!paymentRef.current?.startCardPayment) return;
+            await paymentRef.current.startCardPayment();
+          }}
+        />
+      );
+    }
+
+    if (screen === 'AMOUNT') {
+      return (
+        <AmountEntryScreen
+          theme={theme}
+          onBack={() => go('TERMINAL')}
+          onDone={handleAmountDone}
+        />
+      );
+    }
+
+    if (screen === 'TIP') {
+      return <TipScreen onBack={() => go('AMOUNT')} onDone={handleTipDone} />;
+    }
+
+    if (screen === 'CHECKOUT') {
+      return (
+        <CheckoutScreen
+          chargeData={chargeData}
+          onBack={() => go('TIP')}
+          onConfirm={handleCheckoutConfirm}
+          isBusy={false}
+        />
+      );
+    }
+
+    if (screen === 'RECEIPT') {
+      return (
+        <ReceiptScreen
+          theme={theme}
+          receipt={receipt}
+          onDone={() => {
+            setReceipt(null);
+            setChargeData(null);
+            setPaymentNote('');
+            go('TERMINAL');
+          }}
+        />
+      );
+    }
+
+    return <View />;
+  })();
+
+  const isLoggedIn = !!session?.token;
+
   return (
-    <StripeTerminalProvider
-      publishableKey="pk_live_51SYsEQAdvMmqiwUl8MKhSBczlEIyFG2OQNPrkgIWlndxLdj2DoSab31Pl1DTK85Pws5RCJnFcusnCeNV6Vwn8oo9005E23RB8T"
-      tokenProvider={fetchConnectionToken}
-      logLevel="verbose">
+    <SafeAreaView style={{flex: 1, backgroundColor: theme.bg}}>
+      <StatusBar barStyle="light-content" />
       {content}
-    </StripeTerminalProvider>
+
+      {/* 
+        ✅ Stripe Terminal runs ONLY on TERMINAL screen
+        ✅ Mounted as an absolute sibling with pointerEvents="none"
+           so it cannot intercept taps on your Terminal UI (Enter Amount button).
+      */}
+      {isLoggedIn && screen === 'TERMINAL' ? (
+        <View
+          pointerEvents="none"
+          style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}>
+          <StripeTerminalProvider
+            tokenProvider={tokenProvider}
+            logLevel="verbose">
+            <PaymentTerminal
+              ref={paymentRef}
+              amountCents={Number(chargeData?.totalCents || 0)}
+              currency={chargeData?.currency || 'usd'}
+              amountLabel={chargeData?.totalLabel || null}
+              debugMeta={{note: chargeData?.paymentNote || ''}}
+              breakdown={chargeData || null}
+              onReaderStatusChange={setReaderStatus}
+              onPaymentSuccess={handlePaymentSuccess}
+            />
+          </StripeTerminalProvider>
+        </View>
+      ) : null}
+    </SafeAreaView>
   );
 }

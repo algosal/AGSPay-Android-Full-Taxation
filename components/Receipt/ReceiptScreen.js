@@ -32,13 +32,15 @@ function nOr0(x) {
 function buildReceiptHtml(receipt) {
   const r = receipt || {};
 
+  // ✅ canonical total key first
   const totalCents =
     Number(r.totalCents) ||
     Number(r.grandTotalCents) ||
     Number(r.amountCents) ||
     0;
 
-  const totalText = r.amountText || money(totalCents) || '(missing)';
+  const totalText =
+    r.totalLabel || r.amountText || money(totalCents) || '(missing)';
 
   const subtotalCents = nOr0(r.subtotalCents);
   const taxCents = nOr0(r.taxCents);
@@ -49,7 +51,13 @@ function buildReceiptHtml(receipt) {
   const corp = r.corporateName ? clipText(r.corporateName, 32) : '';
   const store = r.storeName ? clipText(r.storeName, 32) : '';
 
-  const method = r.paymentMethod ? String(r.paymentMethod) : '';
+  // ✅ accept method from either key
+  const method = r.method
+    ? String(r.method)
+    : r.paymentMethod
+    ? String(r.paymentMethod)
+    : '';
+
   const cardLine =
     r.brand || r.last4
       ? `Card • ${(r.brand || 'Card').toUpperCase()}${
@@ -59,7 +67,11 @@ function buildReceiptHtml(receipt) {
 
   const paymentId = r.paymentId ? String(r.paymentId) : '';
   const chargeId = r.chargeId ? String(r.chargeId) : '';
-  const note = r.note ? clipText(r.note, 44) : '';
+  const note = r.paymentNote
+    ? clipText(r.paymentNote, 44)
+    : r.note
+    ? clipText(r.note, 44)
+    : '';
 
   const lineItems = [
     {label: 'Subtotal', amount: money(subtotalCents)},
@@ -131,7 +143,6 @@ function buildReceiptHtml(receipt) {
 </head>
 <body>
   <div class="wrap">
-
     <div class="brand">
       <div class="logo">AGPAY</div>
       <div class="sub">RECEIPT</div>
@@ -212,7 +223,6 @@ function buildReceiptHtml(receipt) {
       <div class="thanks">Thank you for choosing AGPay</div>
       <div class="fine">Luxury-grade payments • Secure • Trusted</div>
     </div>
-
   </div>
 </body>
 </html>`;
@@ -255,15 +265,13 @@ export default function ReceiptScreen({receipt, onDone, onBack}) {
     <View style={styles.root}>
       <View style={styles.card}>
         <View style={styles.headerRow}>
+          <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+
           <Text style={styles.title}>Receipt</Text>
 
-          <View style={{flexDirection: 'row', gap: 12}}>
-            {!!onBack && (
-              <TouchableOpacity onPress={onBack}>
-                <Text style={styles.back}>Back</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          <View style={{width: 60}} />
         </View>
 
         <TouchableOpacity style={styles.printBtn} onPress={handlePrint}>
@@ -299,25 +307,36 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {color: 'white', fontSize: 22, fontWeight: '800'},
-  back: {fontSize: 14, color: '#9ca3af', fontWeight: '800'},
+
+  backBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: '#111827',
+  },
+  backText: {fontSize: 13, color: '#fff', fontWeight: '900'},
 
   printBtn: {
     marginTop: 16,
     backgroundColor: '#111827',
     borderRadius: 14,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#1f2937',
+    width: '100%',
   },
-  printText: {color: GOLD, fontSize: 16, fontWeight: '800'},
+  printText: {color: GOLD, fontSize: 16, fontWeight: '900'},
 
   doneBtn: {
     marginTop: 12,
     backgroundColor: GOLD,
     borderRadius: 14,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
+    width: '100%',
   },
   doneText: {color: '#050814', fontSize: 16, fontWeight: '900'},
 });

@@ -21,114 +21,98 @@ export default StyleSheet.create({
     backgroundColor: AG.bg,
   },
 
-  // ✅ allow scroll (your working code uses ScrollView)
+  // no scrolling — everything must fit
   content: {
-    padding: 12,
-    paddingBottom: 18,
+    flex: 1,
+    padding: 14,
+    justifyContent: 'center',
   },
 
   card: {
     backgroundColor: AG.card,
     borderWidth: 1,
     borderColor: AG.cardBorder,
-    borderRadius: 16,
-    padding: 12,
-    marginTop: 10,
+    borderRadius: 18,
+    padding: 14,
   },
 
   headerRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,
+    justifyContent: 'space-between',
+    marginBottom: 10,
   },
 
-  title: {
-    color: AG.text,
-    fontSize: 21, // slightly smaller
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'center',
+  },
+
+  titleAG: {
+    color: AG.gold,
+    fontSize: 26,
     fontWeight: '900',
-    letterSpacing: 0.5,
-    textAlign: 'center',
+    letterSpacing: 1,
+  },
+
+  titlePay: {
+    color: AG.text,
+    fontSize: 26,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 
   subtitle: {
     color: AG.muted,
-    marginTop: 2,
+    marginTop: 4,
     fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
 
-  // ✅ Tap-to-connect top row
-  topConnectRow: {
+  // Top connect chip (tappable)
+  connectChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: AG.border,
+    backgroundColor: AG.inputBg,
+  },
+  connectChipText: {
+    color: AG.text,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  connectChipTextGold: {
+    color: AG.gold,
+  },
+
+  // Big amount display (non-native keypad UX)
+  bigAmountBox: {
     marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
-    borderRadius: 14,
+    borderRadius: 18,
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
-  topConnectLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-    paddingRight: 10,
-  },
-  topConnectIcon: {
-    fontSize: 18,
-  },
-  topConnectTitle: {
+  bigAmount: {
     color: AG.text,
-    fontSize: 14,
+    fontSize: 44,
     fontWeight: '900',
+    letterSpacing: 1,
+    textAlign: 'center',
+    includeFontPadding: false,
   },
-  topConnectSub: {
+  bigAmountSub: {
+    marginTop: 4,
     color: AG.muted,
     fontSize: 12,
     fontWeight: '800',
-    marginTop: 2,
-  },
-  topConnectPill: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: '#334155',
-  },
-  topConnectPillText: {
-    color: AG.text,
-    fontSize: 11,
-    fontWeight: '900',
-  },
-
-  cardTitle: {
-    color: AG.text,
-    fontSize: 16, // slightly smaller
-    fontWeight: '900',
-  },
-
-  chargeRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginTop: 10,
-  },
-  dollar: {
-    color: AG.text,
-    fontSize: 24,
-    fontWeight: '900',
-    marginRight: 8,
-    includeFontPadding: false,
-  },
-  amountInput: {
-    flex: 1,
-    color: AG.text,
-    fontSize: 22,
-    fontWeight: '900',
-    borderBottomWidth: 1,
-    borderBottomColor: AG.border,
-    paddingBottom: 6,
+    textAlign: 'center',
   },
 
   dividerTop: {
@@ -145,51 +129,116 @@ export default StyleSheet.create({
   },
   rowLabel: {
     color: AG.subtext,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '800',
   },
   rowValue: {
     color: AG.text,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '900',
   },
   rowValueGold: {
     color: AG.gold,
-    fontSize: 24, // slightly smaller than before
+    fontSize: 16,
     fontWeight: '900',
   },
 
-  statusText: {
-    color: AG.muted,
-    fontSize: 13,
-    fontWeight: '800',
-    marginTop: 4,
+  // Keypad
+  keypad: {
+    marginTop: 12,
+  },
+  keypadRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  keypadBtn: {
+    flex: 1,
+    height: 78,
+    marginHorizontal: 6,
+    borderRadius: 18,
+    backgroundColor: AG.inputBg,
+    borderWidth: 1,
+    borderColor: AG.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  keypadBtnGold: {
+    backgroundColor: AG.gold,
+    borderColor: AG.gold,
+  },
+  keypadText: {
+    color: AG.text,
+    fontSize: 30,
+    fontWeight: '900',
+  },
+  keypadTextGold: {
+    color: AG.goldText,
   },
 
   noteInput: {
     marginTop: 10,
-    minHeight: 44,
-    borderRadius: 12,
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
+    borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 10,
     color: AG.text,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
+  },
+
+  // Full-width buttons
+  secondaryBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: AG.border,
+    backgroundColor: AG.inputBg,
+    width: '100%',
+  },
+  secondaryBtnText: {
+    color: AG.text,
+    fontSize: 15,
+    fontWeight: '900',
+    textAlign: 'center',
   },
 
   primaryBtn: {
     backgroundColor: AG.gold,
-    paddingVertical: 12,
-    borderRadius: 14,
+    paddingVertical: 14,
+    borderRadius: 16,
     marginTop: 10,
+    width: '100%',
   },
   primaryBtnText: {
     color: AG.goldText,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '900',
     textAlign: 'center',
+  },
+
+  dangerBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0b1220',
+    width: '100%',
+  },
+  dangerBtnText: {
+    color: AG.danger,
+    fontSize: 14,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+
+  statusText: {
+    color: AG.muted,
+    fontSize: 12,
+    fontWeight: '800',
   },
 });

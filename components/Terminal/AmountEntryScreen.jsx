@@ -1,185 +1,232 @@
-// components/Terminal/AmountEntryScreen.jsx
 import React, {useMemo, useState} from 'react';
-import {View, Text, TouchableOpacity, Alert} from 'react-native';
-import terminalStyles, {AG} from './terminal.styles';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  SafeAreaView,
+  Dimensions,
+  Alert,
+} from 'react-native';
 
-function sanitizeAmountString(s) {
-  // Keep only digits + dot, single dot, max 2 decimals
-  let out = String(s || '').replace(/[^\d.]/g, '');
+const GOLD = '#d4af37';
 
-  const firstDot = out.indexOf('.');
-  if (firstDot !== -1) {
-    // remove extra dots
-    const before = out.slice(0, firstDot + 1);
-    const after = out
-      .slice(firstDot + 1)
-      .replace(/\./g, '') // strip any other dots
-      .slice(0, 2); // max 2 decimals
-    out = before + after;
-  }
-
-  // prevent crazy leading zeros like 0002 -> 2 (but keep "0." case)
-  if (out.startsWith('0') && out.length > 1 && out[1] !== '.') {
-    out = out.replace(/^0+/, '');
-    if (!out) out = '0';
-  }
-
-  // max length guard (avoid overflow)
-  if (out.length > 10) out = out.slice(0, 10);
-
-  return out;
+function formatMoneyFromDigits(digits) {
+  const s = String(digits || '').replace(/[^\d]/g, '');
+  const cents = s.length ? parseInt(s, 10) : 0;
+  return (cents / 100).toFixed(2);
 }
 
-function parseMoney(text) {
-  const raw = String(text ?? '').trim();
-  if (!raw) return 0;
-  const n = parseFloat(raw.replace(',', '.'));
-  return Number.isFinite(n) ? n : 0;
-}
+export default function AmountEntryScreen({
+  initialValue = '',
+  onDone,
+  onBack,
+  theme,
+}) {
+  const [digits, setDigits] = useState(() => {
+    const cleaned = String(initialValue || '').replace(/[^\d]/g, '');
+    return cleaned || '';
+  });
 
-export default function AmountEntryScreen({initialValue = '', onDone, onBack}) {
-  const s = terminalStyles;
+  const t = useMemo(
+    () => ({
+      bg: theme?.bg ?? '#020617',
+      card: theme?.card ?? '#050814',
+      text: theme?.text ?? '#ffffff',
+      muted: theme?.muted ?? '#9ca3af',
+      border: theme?.border ?? '#1f2937',
+      gold: theme?.gold ?? GOLD,
+    }),
+    [theme],
+  );
 
-  const [value, setValue] = useState(() => sanitizeAmountString(initialValue));
+  const amountText = useMemo(() => formatMoneyFromDigits(digits), [digits]);
 
-  const display = useMemo(() => {
-    const v = String(value || '');
-    return v.length ? v : '0';
-  }, [value]);
+  const {width: screenW, height: screenH} = Dimensions.get('window');
 
-  const amountOk = useMemo(() => parseMoney(value) > 0, [value]);
+  const pad = 14;
+  const gap = 10;
+  const gridCols = 3;
 
-  const pressDigit = d => {
-    setValue(prev => sanitizeAmountString(String(prev || '') + String(d)));
-  };
+  const usableW = screenW - pad * 2;
+  const btnW = Math.floor((usableW - gap * (gridCols - 1)) / gridCols);
 
-  const pressDot = () => {
-    setValue(prev => {
-      const p = String(prev || '');
-      if (p.includes('.')) return p;
-      return sanitizeAmountString((p.length ? p : '0') + '.');
+  // keep keypad on screen (no scroll)
+  const btnH = Math.min(btnW, Math.floor((screenH * 0.52) / 4) - gap);
+
+  function pushDigit(d) {
+    setDigits(prev => {
+      const p = String(prev || '').replace(/[^\d]/g, '');
+      const next = (p + String(d)).slice(0, 10);
+      return next.replace(/^0+/, '') || (next.length ? '0' : '');
     });
-  };
+  }
 
-  const pressBackspace = () => {
-    setValue(prev => {
-      const p = String(prev || '');
+  function backspace() {
+    setDigits(prev => {
+      const p = String(prev || '').replace(/[^\d]/g, '');
       if (!p.length) return '';
-      return sanitizeAmountString(p.slice(0, -1));
+      return p.slice(0, -1);
     });
-  };
+  }
 
-  const pressClear = () => setValue('');
+  function clearAll() {
+    setDigits('');
+  }
 
-  const handleContinue = () => {
-    const n = parseMoney(value);
-    if (!Number.isFinite(n) || n <= 0) {
-      Alert.alert('Invalid amount', 'Enter an amount greater than $0.00.');
+  function handleDone() {
+    const cents = parseInt(String(digits || ''), 10) || 0;
+    if (cents < 1) {
+      Alert.alert('Enter amount', 'Amount must be at least $0.01');
       return;
     }
-    onDone?.(sanitizeAmountString(value));
-  };
+
+    onDone?.({
+      amountText: `$${(cents / 100).toFixed(2)}`,
+      amountCents: cents,
+      rawDigits: String(digits || ''),
+    });
+  }
+
+  const keys = [
+    ['1', () => pushDigit(1)],
+    ['2', () => pushDigit(2)],
+    ['3', () => pushDigit(3)],
+    ['4', () => pushDigit(4)],
+    ['5', () => pushDigit(5)],
+    ['6', () => pushDigit(6)],
+    ['7', () => pushDigit(7)],
+    ['8', () => pushDigit(8)],
+    ['9', () => pushDigit(9)],
+    ['C', clearAll, 'alt'],
+    ['0', () => pushDigit(0)],
+    ['⌫', backspace, 'alt'],
+  ];
 
   return (
-    <View style={[s.screen, {padding: 16}]}>
-      {/* Header */}
-      <View style={s.headerRow}>
-        <Text style={[s.title, {fontSize: 24}]}>
-          <Text style={{color: AG.gold}}>AG</Text>
-          <Text style={{color: AG.text}}>Pay · Enter Amount</Text>
-        </Text>
-
-        <View style={{flexDirection: 'row', gap: 10}}>
-          {!!onBack && (
-            <TouchableOpacity onPress={onBack} style={s.logoutBtn}>
-              <Text style={[s.logoutIcon, {fontSize: 20}]}>←</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+    <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]}>
+      <View style={styles.header}>
+        <Pressable onPress={onBack} style={styles.backBtn}>
+          <Text style={[styles.backText, {color: t.gold}]}>Back</Text>
+        </Pressable>
+        <Text style={[styles.title, {color: t.text}]}>Enter Amount</Text>
+        <View style={{width: 60}} />
       </View>
 
-      {/* BIG Amount Display */}
-      <View style={s.amountDisplayBox}>
-        <Text style={s.amountDisplayDollar}>$</Text>
-        <Text style={s.amountDisplayText}>{display}</Text>
+      <View
+        style={[
+          styles.displayCard,
+          {backgroundColor: t.card, borderColor: t.border},
+        ]}>
+        <Text style={[styles.label, {color: t.muted}]}>Total</Text>
+
+        <Text
+          style={[styles.amount, {color: t.text}]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.55}>
+          ${amountText}
+        </Text>
+
+        <Text style={[styles.hint, {color: t.muted}]}>
+          Tap numbers to set dollars and cents
+        </Text>
       </View>
 
       {/* Keypad */}
-      <View style={[s.keypad, {flex: 1, justifyContent: 'center'}]}>
-        <View style={s.keypadRow}>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(1)}>
-            <Text style={s.keypadText}>1</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(2)}>
-            <Text style={s.keypadText}>2</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(3)}>
-            <Text style={s.keypadText}>3</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={[styles.keypadWrap, {paddingHorizontal: pad}]}>
+        <View style={styles.grid}>
+          {keys.map(([label, fn, variant], idx) => {
+            const col = idx % 3;
+            const isLastCol = col === 2;
 
-        <View style={s.keypadRow}>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(4)}>
-            <Text style={s.keypadText}>4</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(5)}>
-            <Text style={s.keypadText}>5</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(6)}>
-            <Text style={s.keypadText}>6</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={s.keypadRow}>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(7)}>
-            <Text style={s.keypadText}>7</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(8)}>
-            <Text style={s.keypadText}>8</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(9)}>
-            <Text style={s.keypadText}>9</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={s.keypadRow}>
-          <TouchableOpacity style={s.keypadBtn} onPress={pressDot}>
-            <Text style={s.keypadText}>.</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.keypadBtn} onPress={() => pressDigit(0)}>
-            <Text style={s.keypadText}>0</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.keypadBtn} onPress={pressBackspace}>
-            <Text style={s.keypadText}>⌫</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Actions */}
-        <View style={[s.keypadRow, {marginTop: 6}]}>
-          <TouchableOpacity style={s.keypadBtn} onPress={pressClear}>
-            <Text style={[s.keypadText, {fontSize: 26}]}>Clear</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              s.keypadBtn,
-              s.keypadBtnGold,
-              {flex: 2}, // make continue bigger
-              !amountOk && {opacity: 0.6},
-            ]}
-            onPress={handleContinue}>
-            <Text style={[s.keypadText, s.keypadTextGold, {fontSize: 30}]}>
-              Continue
-            </Text>
-          </TouchableOpacity>
+            return (
+              <Pressable
+                key={`${label}-${idx}`}
+                onPress={fn}
+                style={({pressed}) => [
+                  styles.key,
+                  {
+                    width: btnW,
+                    height: btnH,
+                    marginBottom: gap,
+                    marginRight: isLastCol ? 0 : gap,
+                    backgroundColor: variant === 'alt' ? '#0b1224' : t.card,
+                    borderColor: t.border,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}>
+                <Text
+                  style={[
+                    styles.keyText,
+                    {color: variant === 'alt' ? t.gold : t.text},
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.7}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
       </View>
 
-      <Text style={[s.statusText, {textAlign: 'center', fontSize: 14}]}>
-        Big keypad for easy entry.
-      </Text>
-    </View>
+      <View style={[styles.actions, {paddingHorizontal: pad}]}>
+        <Pressable
+          onPress={handleDone}
+          style={({pressed}) => [
+            styles.primaryBtn,
+            {backgroundColor: t.gold, opacity: pressed ? 0.9 : 1},
+          ]}>
+          <Text style={styles.primaryText}>Continue</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {flex: 1},
+  header: {
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  backBtn: {width: 60, paddingVertical: 8},
+  backText: {fontWeight: '800'},
+  title: {fontSize: 18, fontWeight: '900'},
+  displayCard: {
+    marginHorizontal: 14,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  label: {fontSize: 12, fontWeight: '700'},
+  amount: {marginTop: 8, fontSize: 44, fontWeight: '900'},
+  hint: {marginTop: 6, fontSize: 12},
+  keypadWrap: {flex: 1, justifyContent: 'center'},
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  key: {
+    borderWidth: 1,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyText: {fontSize: 26, fontWeight: '900'},
+  actions: {paddingBottom: 14},
+  primaryBtn: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryText: {color: '#020617', fontWeight: '900', fontSize: 16},
+});

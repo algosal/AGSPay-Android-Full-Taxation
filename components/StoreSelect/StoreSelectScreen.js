@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {
   View,
   Text,
@@ -13,54 +13,89 @@ import * as Keychain from 'react-native-keychain';
 const STORES_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioStores';
 
-function safeJsonParse(s) {
+async function readAgpayAuthToken() {
   try {
-    return JSON.parse(s);
-  } catch {
+    const creds = await Keychain.getInternetCredentials('agpayAuth');
+    if (!creds?.password) return null;
+    const parsed = JSON.parse(creds.password);
+    return parsed?.token || null; // RAW JWT — NO Bearer
+  } catch (e) {
+    console.log('readAgpayAuthToken error:', e);
     return null;
   }
 }
 
-export default function StoreSelectScreen({
-  corporate,
-  onSelectionCompleted,
-  onBack,
-  onLogout,
-}) {
+async function readAgpaySelection() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpaySelection');
+    if (!creds?.password) return null;
+    return JSON.parse(creds.password);
+  } catch (e) {
+    console.log('readAgpaySelection error:', e);
+    return null;
+  }
+}
+
+async function saveAgpaySelection(nextSelection) {
+  try {
+    await Keychain.setInternetCredentials(
+      'agpaySelection',
+      'selection',
+      JSON.stringify(nextSelection || {}),
+    );
+    console.log('✅ Saved agpaySelection (store updated)');
+  } catch (e) {
+    console.log('saveAgpaySelection error:', e);
+  }
+}
+
+function buildStoreRef(store) {
+  const su = store?.storeUuid;
+  const se = store?.storeEpoch;
+  if (!su || !se) return null;
+  return `${su}#${se}`;
+}
+
+export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState([]);
-  const [saving, setSaving] = useState(false);
-
-  const corporateId = corporate?.corporateId || null;
-  const corporateName =
-    corporate?.corporateName || corporate?.dbaName || 'Corporate';
 
   useEffect(() => {
-    if (!corporateId) {
-      Alert.alert('Missing corporate', 'Please select a corporate first.');
-      onBack?.(); // HARD STOP: force back to corporate select
-      return;
-    }
-    loadStores();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [corporateId]);
+    (async () => {
+      const sel = await readAgpaySelection();
 
-  async function loadStores() {
-    try {
-      setLoading(true);
-
-      const authCreds = await Keychain.getInternetCredentials('agpayAuth');
-      if (!authCreds || !authCreds.password) {
-        Alert.alert('Auth error', 'Missing authentication context.');
+      if (!sel?.corporateId) {
+        console.log('❌ Missing corporateId in agpaySelection:', sel);
+        Alert.alert(
+          'Missing corporate',
+          'Corporate selection missing corporateId. Please select a corporate again.',
+        );
+        setLoading(false);
         return;
       }
 
-      const auth = safeJsonParse(authCreds.password) || {};
-      const token = auth.token;
+      await loadStores(sel.corporateId);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      console.log('STORES → fetching with JWT for corporateId:', corporateId);
+  async function loadStores(corporateId) {
+    try {
+      setLoading(true);
 
-      const resp = await fetch(STORES_URL, {
+      const token = await readAgpayAuthToken();
+      if (!token) {
+        Alert.alert('Auth error', 'Missing token. Please log in again.');
+        return;
+      }
+
+      const encodedCorporateId = encodeURIComponent(String(corporateId));
+      const url = `${STORES_URL}?corporateId=${encodedCorporateId}`;
+
+      console.log('STORES → fetching with JWT (GET by corporateId)');
+      console.log('STORES → url:', url);
+
+      const resp = await fetch(url, {
         method: 'GET',
         headers: {
           Authorization: token, // RAW JWT — NO Bearer
@@ -69,18 +104,22 @@ export default function StoreSelectScreen({
       });
 
       const text = await resp.text();
+      console.log('STORES → HTTP status:', resp.status);
 
       if (!resp.ok) {
-        console.log('STORES → error response:', text);
+        console.log('STORES → failed:', text);
         Alert.alert('Error', 'Failed to load stores.');
         return;
       }
 
-      const data = safeJsonParse(text);
-      console.log(
-        'STORES → received count:',
-        Array.isArray(data) ? data.length : 0,
-      );
+      let data = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+
+      console.log('STORES → received:', data);
 
       setStores(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -91,113 +130,54 @@ export default function StoreSelectScreen({
     }
   }
 
-  const filteredStores = useMemo(() => {
-    if (!Array.isArray(stores) || !corporateId) return [];
-    return stores.filter(s => s?.corporateId === corporateId);
-  }, [stores, corporateId]);
-
   async function handlePickStore(store) {
     try {
-      if (!store) return;
+      console.log('STORE PICKED:', store);
 
-      setSaving(true);
+      const storeName = store?.storeName || 'Unnamed Store';
+      const storeRef = buildStoreRef(store);
 
-      // Read auth context for ownerId
-      const authCreds = await Keychain.getInternetCredentials('agpayAuth');
-      const auth = authCreds?.password
-        ? safeJsonParse(authCreds.password)
-        : null;
-
-      if (!auth) {
-        Alert.alert('Auth error', 'Missing authentication context.');
+      if (!storeRef) {
+        Alert.alert(
+          'Invalid store record',
+          'Store is missing storeUuid/storeEpoch.',
+        );
         return;
       }
 
-      const ownerUuid =
-        auth.ownerIdRaw ||
-        auth.ownerId ||
-        auth.userId ||
-        auth.profile?.userId ||
-        null;
+      const sel = (await readAgpaySelection()) || {};
 
-      if (!ownerUuid) {
-        Alert.alert('Error', 'OwnerId missing; please log in again.');
-        return;
-      }
+      const next = {
+        ...sel,
 
-      // CorporateRef = "<uuid>#<epoch>"
-      const corpUuid = corporate?.corporateUuid;
-      const corpEpoch = corporate?.createdAt || corporate?.corporateEpoch;
+        corporateId: sel.corporateId || null,
+        corporateRef: sel.corporateRef || null,
+        corporateName: sel.corporateName || null,
 
-      if (!corpUuid || !corpEpoch) {
-        Alert.alert('Error', 'Corporate reference missing.');
-        return;
-      }
-
-      const corporateRef = `${corpUuid}#${Math.trunc(Number(corpEpoch))}`;
-
-      // StoreRef = "<uuid>#<epoch>"
-      const storeUuid = store?.storeUuid;
-      const storeEpoch = store?.storeEpoch || store?.createdAt;
-
-      if (!storeUuid || !storeEpoch) {
-        Alert.alert('Error', 'Store reference missing.');
-        return;
-      }
-
-      const storeRef = `${storeUuid}#${Math.trunc(Number(storeEpoch))}`;
-
-      const selectionPayload = {
-        ownerId: ownerUuid,
-        corporateRef,
-        corporateName,
+        storeName,
         storeRef,
-        storeName: store?.storeName || 'Store',
+        storeUuid: store?.storeUuid || null,
+        storeEpoch: store?.storeEpoch || null,
+
+        corpStoreKey: store?.corpStoreKey || null,
       };
 
-      // HARDENING: ensure payload is complete before proceeding
-      const isComplete =
-        !!selectionPayload.ownerId &&
-        !!selectionPayload.corporateRef &&
-        !!selectionPayload.storeRef;
+      await saveAgpaySelection(next);
 
-      if (!isComplete) {
-        Alert.alert('Error', 'Selection is incomplete. Please try again.');
+      if (typeof onStorePicked !== 'function') {
+        console.log('❌ onStorePicked is not a function:', onStorePicked);
+        Alert.alert(
+          'Navigation missing',
+          'onStorePicked not configured. Check App.js wiring.',
+        );
         return;
       }
 
-      console.log('AGPAY SELECTION → saving:', selectionPayload);
-
-      await Keychain.setInternetCredentials(
-        'agpaySelection',
-        'selection',
-        JSON.stringify(selectionPayload),
-      );
-
-      console.log('AGPAY SELECTION → saved to Keychain');
-
-      onSelectionCompleted();
+      onStorePicked(store);
     } catch (e) {
       console.log('handlePickStore error:', e);
-      Alert.alert('Error', 'Failed to save store selection.');
-    } finally {
-      setSaving(false);
+      Alert.alert('Error', 'Unable to select store.');
     }
-  }
-
-  function renderItem({item}) {
-    return (
-      <TouchableOpacity
-        style={[styles.card, saving && {opacity: 0.6}]}
-        disabled={saving}
-        onPress={() => handlePickStore(item)}>
-        <Text style={styles.name}>{item.storeName || 'Unnamed Store'}</Text>
-        <Text style={styles.sub}>
-          {item.storeCode ? `Code: ${item.storeCode}` : '—'} ·{' '}
-          {item.city || item?.address?.city || ''}
-        </Text>
-      </TouchableOpacity>
-    );
   }
 
   if (loading) {
@@ -212,8 +192,8 @@ export default function StoreSelectScreen({
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.back}>‹ Back</Text>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
 
         <Text style={styles.title}>Select a Store</Text>
@@ -223,29 +203,33 @@ export default function StoreSelectScreen({
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.context}>
-        Corporate: <Text style={{color: GOLD}}>{corporateName}</Text>
-      </Text>
+      <FlatList
+        data={stores}
+        keyExtractor={(item, idx) =>
+          String(item?.corpStoreKey || item?.storeUuid || idx)
+        }
+        renderItem={({item}) => {
+          const name = item?.storeName || 'Unnamed Store';
+          const sub = `${item?.status || '—'} · ${item?.country || ''}`.trim();
 
-      {filteredStores.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyText}>
-            No stores found for this corporate.
-          </Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={loadStores}>
-            <Text style={styles.retryText}>Reload</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <FlatList
-          data={filteredStores}
-          keyExtractor={item =>
-            item.corpStoreKey || `${item.storeUuid}#${item.storeEpoch}`
-          }
-          renderItem={renderItem}
-          contentContainerStyle={{paddingBottom: 40}}
-        />
-      )}
+          return (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => handlePickStore(item)}>
+              <Text style={styles.name}>{name}</Text>
+              <Text style={styles.sub}>{sub}</Text>
+            </TouchableOpacity>
+          );
+        }}
+        contentContainerStyle={{paddingBottom: 40}}
+        ListEmptyComponent={
+          <View style={{marginTop: 40, alignItems: 'center'}}>
+            <Text style={{color: '#9ca3af', marginBottom: 14}}>
+              No stores found.
+            </Text>
+          </View>
+        }
+      />
     </View>
   );
 }
@@ -262,27 +246,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 16,
   },
   title: {
     color: 'white',
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: '800',
-  },
-  back: {
-    color: '#9ca3af',
-    fontSize: 14,
-    fontWeight: '700',
   },
   logout: {
     fontSize: 22,
     color: GOLD,
   },
-  context: {
-    color: '#9ca3af',
-    marginBottom: 12,
-    fontSize: 12,
+  backBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: '#111827',
   },
+  backText: {fontSize: 13, color: '#fff', fontWeight: '900'},
   card: {
     backgroundColor: '#050814',
     borderRadius: 16,
@@ -310,23 +293,5 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 12,
     color: '#9ca3af',
-  },
-  empty: {
-    marginTop: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#9ca3af',
-    marginBottom: 14,
-  },
-  retryBtn: {
-    backgroundColor: GOLD,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 14,
-  },
-  retryText: {
-    color: '#020617',
-    fontWeight: '800',
   },
 });

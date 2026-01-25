@@ -1,5 +1,3 @@
-// C:\vscode\AG\AGPay-Sand\components\CorporateSelect\CorporateSelectScreen.js
-
 import React, {useEffect, useState} from 'react';
 import {
   View,
@@ -15,6 +13,31 @@ import * as Keychain from 'react-native-keychain';
 const CORPORATES_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioCorporates';
 
+async function readAgpayAuthToken() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpayAuth');
+    if (!creds?.password) return null;
+    const parsed = JSON.parse(creds.password);
+    return parsed?.token || null; // RAW JWT — NO Bearer
+  } catch (e) {
+    console.log('readAgpayAuthToken error:', e);
+    return null;
+  }
+}
+
+async function saveAgpaySelection(selectionPayload) {
+  try {
+    await Keychain.setInternetCredentials(
+      'agpaySelection',
+      'selection',
+      JSON.stringify(selectionPayload || {}),
+    );
+    console.log('✅ Saved agpaySelection');
+  } catch (e) {
+    console.log('saveAgpaySelection error:', e);
+  }
+}
+
 export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
   const [loading, setLoading] = useState(true);
   const [corporates, setCorporates] = useState([]);
@@ -28,21 +51,7 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
     try {
       setLoading(true);
 
-      const authCreds = await Keychain.getInternetCredentials('agpayAuth');
-      if (!authCreds || !authCreds.password) {
-        Alert.alert('Auth error', 'Missing authentication context.');
-        return;
-      }
-
-      let auth = null;
-      try {
-        auth = JSON.parse(authCreds.password);
-      } catch {
-        auth = null;
-      }
-
-      const token = auth?.token;
-
+      const token = await readAgpayAuthToken();
       if (!token) {
         Alert.alert('Auth error', 'Missing token. Please log in again.');
         return;
@@ -84,6 +93,66 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
     }
   }
 
+  async function handlePickCorporate(corp) {
+    try {
+      if (!corp?.corporateId) {
+        Alert.alert('Select corporate', 'Invalid corporate record.');
+        return;
+      }
+
+      console.log('CORPORATE PICKED:', corp);
+
+      const corporateId = corp.corporateId; // "CORP#<uuid>#<epoch>"
+
+      const corporateRef = String(corporateId || '').startsWith('CORP#')
+        ? String(corporateId).replace(/^CORP#/, '')
+        : corp.corporateRef;
+
+      if (!corporateRef || !String(corporateRef).includes('#')) {
+        console.log('❌ Invalid corporateRef derived:', corporateRef);
+        Alert.alert(
+          'Corporate error',
+          'Could not derive corporateRef (uuid#epoch).',
+        );
+        return;
+      }
+
+      const payload = {
+        ownerId: corp.ownerId || null,
+        corporateId,
+        corporateRef,
+        corporateName: corp.corporateName || corp.dbaName || '',
+        corporateUuid: corp.corporateUuid || null,
+
+        storeName: null,
+        storeRef: null,
+        storeUuid: null,
+        storeEpoch: null,
+        corpStoreKey: null,
+      };
+
+      await saveAgpaySelection(payload);
+      console.log('✅ Cleared store fields in agpaySelection');
+
+      if (typeof onCorporatePicked !== 'function') {
+        console.log(
+          '❌ onCorporatePicked is not a function:',
+          onCorporatePicked,
+        );
+        Alert.alert(
+          'Navigation missing',
+          'onCorporatePicked not configured. Check App.js wiring.',
+        );
+        return;
+      }
+
+      onCorporatePicked(corp);
+    } catch (e) {
+      console.log('handlePickCorporate error:', e);
+      Alert.alert('Error', 'Unable to select corporate.');
+    }
+  }
+
   function renderItem({item}) {
     const name = item?.corporateName || item?.dbaName || 'Unnamed Corporate';
     const sub = `${item?.industry || '—'} · ${item?.country || ''}`.trim();
@@ -91,16 +160,7 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
     return (
       <TouchableOpacity
         style={styles.card}
-        onPress={() => {
-          // HARDENING: never advance if corporateId missing
-          if (!item?.corporateId) {
-            Alert.alert('Select corporate', 'Invalid corporate record.');
-            return;
-          }
-
-          console.log('CORPORATE PICKED:', item);
-          onCorporatePicked(item);
-        }}>
+        onPress={() => handlePickCorporate(item)}>
         <Text style={styles.name}>{name}</Text>
         <Text style={styles.sub}>{sub}</Text>
       </TouchableOpacity>

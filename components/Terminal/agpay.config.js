@@ -1,15 +1,49 @@
-export const AGPAY_CONFIG = {
-  currency: 'usd',
-  taxRate: 0.08875,
-  roundToCents: true,
+import * as Keychain from 'react-native-keychain';
 
-  // Stripe baseline (pass-through)
-  stripeFeeRate: 0.027,
-  stripeFeeFixedCents: 5,
+export async function readAgpayAuthToken() {
+  try {
+    // Preferred: token stored as plain string (service: agpayAuthToken)
+    const tokenCreds = await Keychain.getGenericPassword({
+      service: 'agpayAuthToken',
+    });
+    if (tokenCreds?.password && typeof tokenCreds.password === 'string') {
+      return tokenCreds.password;
+    }
 
-  // AGPay service fee (smooth ramp: 5¢ → $1.00 at $100, then cap)
-  agFeeMinCents: 5,
+    // Fallback: your existing storage (internet creds: agpayAuth)
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      const session = JSON.parse(internet.password);
+      if (session?.token) return session.token;
+    }
 
-  agFeeMaxCents: 50,
-  agFeeSlopeRate: 0.0045, // (50 - 5) / 10000
-};
+    console.log('readAgpayAuthToken: no token found');
+    return null;
+  } catch (e) {
+    console.log('readAgpayAuthToken error:', e);
+    return null;
+  }
+}
+
+export async function readAgpaySession() {
+  try {
+    // Preferred: session stored as JSON (service: agpaySession)
+    const sessCreds = await Keychain.getGenericPassword({
+      service: 'agpaySession',
+    });
+    if (sessCreds?.password) {
+      return JSON.parse(sessCreds.password);
+    }
+
+    // Fallback: internet creds
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      return JSON.parse(internet.password);
+    }
+
+    return null;
+  } catch (e) {
+    console.log('readAgpaySession error:', e);
+    return null;
+  }
+}

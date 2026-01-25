@@ -1,30 +1,21 @@
 // components/Checkout/checkout.styles.js
 import {StyleSheet} from 'react-native';
 
-export const AG = {
+const AG = {
   bg: '#000000',
   card: '#0b1220',
   cardBorder: '#1f2937',
   inputBg: '#020617',
   border: '#374151',
   text: '#ffffff',
-  subtext: '#d1d5db',
   muted: '#9ca3af',
   gold: '#facc15',
   goldText: '#020617',
-  danger: '#ef4444',
 };
 
 export default StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: AG.bg,
-  },
-  content: {
-    flex: 1,
-    padding: 14,
-    justifyContent: 'center',
-  },
+  screen: {flex: 1, backgroundColor: AG.bg},
+  content: {flex: 1, padding: 14, justifyContent: 'center'},
   card: {
     backgroundColor: AG.card,
     borderWidth: 1,
@@ -39,24 +30,18 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+  title: {color: AG.text, fontSize: 22, fontWeight: '900'},
   backBtn: {
-    width: 60,
-    paddingVertical: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: AG.border,
+    backgroundColor: AG.inputBg,
   },
-  backText: {
-    color: AG.muted,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  title: {
-    color: AG.text,
-    fontSize: 18,
-    fontWeight: '900',
-    textAlign: 'center',
-  },
+  backText: {color: AG.text, fontSize: 13, fontWeight: '900'},
 
   summaryBox: {
-    marginTop: 4,
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
@@ -67,51 +52,34 @@ export default StyleSheet.create({
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 8,
+    marginTop: 6,
   },
-  rowLabel: {
-    color: AG.subtext,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  rowValue: {
-    color: AG.text,
-    fontSize: 14,
-    fontWeight: '900',
-  },
+  rowLabel: {color: AG.muted, fontSize: 14, fontWeight: '800'},
+  rowValue: {color: AG.text, fontSize: 14, fontWeight: '900'},
 
   divider: {
-    marginTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#111827',
+    marginTop: 10,
     paddingTop: 10,
   },
 
-  rowLabelTotal: {
-    color: AG.subtext,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  rowValueTotal: {
-    color: AG.gold,
-    fontSize: 18,
-    fontWeight: '900',
-  },
+  rowLabelTotal: {color: AG.text, fontSize: 16, fontWeight: '900'},
+  rowValueTotal: {color: AG.gold, fontSize: 20, fontWeight: '900'},
 
   primaryBtn: {
+    marginTop: 14,
     backgroundColor: AG.gold,
-    paddingVertical: 14,
     borderRadius: 16,
-    marginTop: 12,
+    paddingVertical: 14,
+    width: '100%',
+    alignItems: 'center',
   },
-  primaryBtnDisabled: {
-    opacity: 0.6,
-  },
+  primaryBtnDisabled: {opacity: 0.65},
   primaryBtnText: {
     color: AG.goldText,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '900',
-    textAlign: 'center',
   },
 
   note: {

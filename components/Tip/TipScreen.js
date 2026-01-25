@@ -1,316 +1,179 @@
+// components/Tip/TipScreen.js
 import React, {useMemo, useState} from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-} from 'react-native';
+import {Alert, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 
-import terminalStyles, {AG} from '../Terminal/terminal.styles';
+const GOLD = '#d4af37';
 
-function dollarsFromCents(cents) {
-  const n = Number(cents || 0);
-  return (n / 100).toFixed(2);
-}
-
-function parseMoneyToCents(text) {
-  const raw = String(text ?? '').trim();
-  if (!raw) return 0;
-  const n = parseFloat(raw.replace(',', '.'));
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.round(n * 100);
-}
-
-export default function TipScreen({
-  // ✅ NEW (preferred): explicit breakdown coming from TerminalScreen
-  subtotalCents,
-  taxCents,
-  albaFeeCents,
-  baseTotalCents,
-  baseTotalLabel,
-
-  // ✅ BACKWARD COMPAT: if older code still passes these, we’ll fall back safely
-  baseAmountCents,
-  baseAmountLabel,
-
-  currency = 'usd',
-  paymentNote,
-  corporateName,
-  storeName,
-  onBack,
-
-  // onDone({ method, tipCents, grandTotalCents, ... + breakdown })
-  onDone,
-}) {
-  const s = terminalStyles;
-
-  const [selectedTipCents, setSelectedTipCents] = useState(0);
-  const [customTipInput, setCustomTipInput] = useState('');
-
-  const presets = useMemo(() => {
-    return [
-      {label: '$1', cents: 100},
-      {label: '$2', cents: 200},
-      {label: '$3', cents: 300},
-      {label: '$5', cents: 500},
-      {label: '$10', cents: 1000},
-    ];
-  }, []);
-
-  // ✅ Choose correct base (prefer baseTotalCents, fallback to baseAmountCents)
-  const base =
-    Number.isFinite(Number(baseTotalCents)) && Number(baseTotalCents) > 0
-      ? Number(baseTotalCents)
-      : Number(baseAmountCents || 0);
-
-  const shownBaseLabel =
-    baseTotalLabel || baseAmountLabel || `$${dollarsFromCents(base)}`;
-
-  const safeSubtotalCents = Number.isFinite(Number(subtotalCents))
-    ? Number(subtotalCents)
-    : null;
-
-  const safeTaxCents = Number.isFinite(Number(taxCents)) ? Number(taxCents) : 0;
-
-  const safeAlbaFeeCents = Number.isFinite(Number(albaFeeCents))
-    ? Number(albaFeeCents)
-    : 0;
-
-  const customTipCents = useMemo(
-    () => parseMoneyToCents(customTipInput),
-    [customTipInput],
-  );
-
-  const effectiveTipCents = useMemo(() => {
-    const rawCustom = String(customTipInput ?? '').trim();
-    if (rawCustom.length > 0) return customTipCents;
-    return Number(selectedTipCents || 0);
-  }, [customTipInput, customTipCents, selectedTipCents]);
-
-  const grandTotalCents = base + effectiveTipCents;
-
-  const tipLabel = `$${dollarsFromCents(effectiveTipCents)}`;
-  const grandTotalLabel = `$${dollarsFromCents(grandTotalCents)}`;
-
-  const finish = method => {
-    if (base <= 0) {
-      Alert.alert('Invalid amount', 'Base total must be greater than $0.00.');
-      return;
-    }
-    if (effectiveTipCents < 0) {
-      Alert.alert('Invalid tip', 'Tip cannot be negative.');
-      return;
-    }
-    if (typeof onDone === 'function') {
-      onDone({
-        method, // CASH or CARD
-        currency,
-
-        // ✅ tip
-        tipCents: effectiveTipCents,
-        tipLabel,
-
-        // ✅ totals
-        baseTotalCents: base,
-        baseTotalLabel: shownBaseLabel,
-        grandTotalCents,
-        grandTotalLabel,
-
-        // ✅ CRITICAL: carry breakdown forward so Checkout/Receipt/Stripe use it
-        subtotalCents: safeSubtotalCents, // can be null if older flow
-        taxCents: safeTaxCents,
-        albaFeeCents: safeAlbaFeeCents,
-      });
-    } else {
-      Alert.alert('Missing route', 'onDone is not configured.');
-    }
+function formatMoneyFromDigits(digits) {
+  const s = String(digits || '').replace(/[^\d]/g, '');
+  const cents = s.length ? parseInt(s, 10) : 0;
+  return {
+    cents,
+    label: `$${(cents / 100).toFixed(2)}`,
   };
+}
 
-  const clearCustom = () => setCustomTipInput('');
+export default function TipScreen({chargeData, onBack, onDone, theme}) {
+  // tip digits represent cents (same as your AmountEntry approach)
+  const [digits, setDigits] = useState('0');
+
+  const money = useMemo(() => formatMoneyFromDigits(digits), [digits]);
+
+  function pushDigit(d) {
+    setDigits(prev => {
+      const p = String(prev || '0').replace(/[^\d]/g, '');
+      const next = (p === '0' ? '' : p) + String(d);
+      if (next.length > 10) return p || '0';
+      return next.replace(/^0+/, '') || '0';
+    });
+  }
+
+  function backspace() {
+    setDigits(prev => {
+      const s = String(prev || '0');
+      if (s.length <= 1) return '0';
+      return s.slice(0, -1);
+    });
+  }
+
+  function clearAll() {
+    setDigits('0');
+  }
+
+  function proceed() {
+    if (typeof onDone !== 'function') {
+      Alert.alert('Navigation error', 'onDone not wired.');
+      return;
+    }
+
+    // Tip can be $0.00 — allow it.
+    onDone({tipCents: Number(money.cents || 0)});
+  }
+
+  const corporateName =
+    chargeData?.corporateName || chargeData?.meta?.corporateName || '';
+  const storeName = chargeData?.storeName || chargeData?.meta?.storeName || '';
+  const subtitle =
+    (corporateName || 'Corporate') + ' · ' + (storeName || 'Store');
+
+  const keys = [
+    ['1', () => pushDigit(1)],
+    ['2', () => pushDigit(2)],
+    ['3', () => pushDigit(3)],
+    ['4', () => pushDigit(4)],
+    ['5', () => pushDigit(5)],
+    ['6', () => pushDigit(6)],
+    ['7', () => pushDigit(7)],
+    ['8', () => pushDigit(8)],
+    ['9', () => pushDigit(9)],
+    ['C', clearAll, 'alt'],
+    ['0', () => pushDigit(0)],
+    ['⌫', backspace, 'alt'],
+  ];
 
   return (
-    <KeyboardAvoidingView
-      style={{flex: 1, backgroundColor: AG.bg}}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={s.screen} contentContainerStyle={s.content}>
-        <View style={s.headerRow}>
-          <Text style={[s.title, {fontSize: 22}]}>
-            <Text style={{color: AG.gold}}>AG</Text>
-            <Text style={{color: AG.text}}>Pay · Tip</Text>
-          </Text>
+    <View style={styles.root}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
 
-          <View style={{flexDirection: 'row', gap: 10}}>
-            {typeof onBack === 'function' && (
-              <TouchableOpacity onPress={onBack} style={s.logoutBtn}>
-                <Text style={s.logoutIcon}>←</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+        <View style={{flex: 1, alignItems: 'center'}}>
+          <Text style={styles.title}>Add Tip</Text>
+          <Text style={styles.sub} numberOfLines={1}>
+            {subtitle}
+          </Text>
         </View>
 
-        <Text style={[s.subtitle, {fontSize: 15}]}>
-          Add a tip before payment
+        <View style={{width: 64}} />
+      </View>
+
+      <View style={styles.amountBox}>
+        <Text style={styles.amountLabel}>Tip</Text>
+        <Text style={styles.amountText} numberOfLines={1} adjustsFontSizeToFit>
+          {money.label}
         </Text>
+        <Text style={styles.amountHint}>Tap numbers to set tip</Text>
+      </View>
 
-        <View style={s.card}>
-          <Text style={[s.cardTitle, {fontSize: 18}]}>Order Summary</Text>
-
-          {!!corporateName && (
-            <Text style={[s.statusText, {fontSize: 14}]}>{corporateName}</Text>
-          )}
-          {!!storeName && (
-            <Text style={[s.statusText, {fontSize: 14}]}>
-              Store: {storeName}
-            </Text>
-          )}
-          {!!paymentNote && (
-            <Text style={[s.statusText, {fontSize: 14}]}>
-              Note: {paymentNote}
-            </Text>
-          )}
-
-          <View style={[s.row, {marginTop: 12}]}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Base total</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>{shownBaseLabel}</Text>
-          </View>
-
-          <View style={s.row}>
-            <Text style={[s.rowLabel, {fontSize: 14}]}>Tip</Text>
-            <Text style={[s.rowValue, {fontSize: 14}]}>{tipLabel}</Text>
-          </View>
-
-          <View style={[s.row, {marginTop: 10, alignItems: 'flex-end'}]}>
-            <Text style={[s.rowLabel, {fontWeight: '900', fontSize: 16}]}>
-              Grand total
-            </Text>
-            <Text style={[s.rowValueGold, {fontSize: 30, fontWeight: '900'}]}>
-              {grandTotalLabel}
-            </Text>
-          </View>
-
-          <View style={{marginTop: 10}}>
-            {safeSubtotalCents !== null && (
-              <Text style={[s.statusText, {fontSize: 12}]}>
-                Subtotal: ${dollarsFromCents(safeSubtotalCents)}
-              </Text>
-            )}
-            <Text style={[s.statusText, {fontSize: 12}]}>
-              Tax: ${dollarsFromCents(safeTaxCents)}
-            </Text>
-            <Text style={[s.statusText, {fontSize: 12}]}>
-              Alba Fee: ${dollarsFromCents(safeAlbaFeeCents)}
-            </Text>
-          </View>
-        </View>
-
-        <View style={s.card}>
-          <Text style={[s.cardTitle, {fontSize: 18}]}>Choose Tip</Text>
-
-          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 10}}>
-            {presets.map(p => {
-              const isSelected =
-                String(customTipInput ?? '').trim().length === 0 &&
-                selectedTipCents === p.cents;
-
-              return (
-                <TouchableOpacity
-                  key={p.label}
-                  onPress={() => {
-                    setSelectedTipCents(p.cents);
-                    setCustomTipInput('');
-                  }}
-                  style={[
-                    s.secondaryBtn,
-                    {
-                      paddingHorizontal: 16,
-                      paddingVertical: 10,
-                      borderWidth: 1,
-                      borderColor: isSelected ? AG.gold : AG.border,
-                      backgroundColor: isSelected ? AG.inputBg : 'transparent',
-                    },
-                  ]}>
-                  <Text
-                    style={[
-                      s.secondaryBtnText,
-                      {fontSize: 16, color: isSelected ? AG.gold : AG.text},
-                    ]}>
-                    {p.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <View style={{marginTop: 16}}>
-            <Text style={[s.statusText, {fontSize: 14, marginBottom: 8}]}>
-              Or enter custom tip
-            </Text>
-
-            <View style={{flexDirection: 'row', alignItems: 'center', gap: 10}}>
-              <Text style={{color: AG.text, fontSize: 22, fontWeight: '900'}}>
-                $
-              </Text>
-
-              <TextInput
-                style={[
-                  s.amountInput,
-                  {fontSize: 22, flex: 1, paddingVertical: 10},
-                ]}
-                keyboardType="numeric"
-                value={customTipInput}
-                onChangeText={setCustomTipInput}
-                placeholder="0.00"
-                placeholderTextColor={AG.muted}
-              />
-
-              <TouchableOpacity onPress={clearCustom} style={s.logoutBtn}>
-                <Text style={s.logoutIcon}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={[s.statusText, {fontSize: 12, marginTop: 8}]}>
-              Custom tip overrides preset selection.
-            </Text>
-          </View>
-        </View>
-
-        <View style={s.card}>
-          <Text style={[s.cardTitle, {fontSize: 18}]}>Pay Now</Text>
-
-          <View style={{flexDirection: 'row', gap: 10, marginTop: 10}}>
+      <View style={styles.keypad}>
+        <View style={styles.grid}>
+          {keys.map(([label, fn, variant], idx) => (
             <TouchableOpacity
-              onPress={() => finish('CASH')}
-              style={[
-                s.primaryBtn,
-                {flex: 1, marginTop: 0, backgroundColor: '#16a34a'},
-              ]}>
-              <Text style={[s.primaryBtnText, {color: '#fff', fontSize: 16}]}>
-                Pay Cash
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => finish('CARD')}
-              style={[
-                s.primaryBtn,
-                {flex: 1, marginTop: 0, backgroundColor: AG.gold},
-              ]}>
+              key={`${label}-${idx}`}
+              style={[styles.key, variant === 'alt' ? styles.keyAlt : null]}
+              onPress={fn}>
               <Text
-                style={[s.primaryBtnText, {color: AG.goldText, fontSize: 16}]}>
-                Pay Card
+                style={[
+                  styles.keyText,
+                  variant === 'alt' ? {color: GOLD} : null,
+                ]}>
+                {label}
               </Text>
             </TouchableOpacity>
-          </View>
-
-          <Text style={[s.statusText, {fontSize: 12, marginTop: 10}]}>
-            Next screen runs the payment automatically.
-          </Text>
+          ))}
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </View>
+
+      <View style={styles.bottomRow}>
+        <TouchableOpacity style={styles.continueBtn} onPress={proceed}>
+          <Text style={styles.continueText}>Continue</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {flex: 1, backgroundColor: '#020617', padding: 16},
+  header: {flexDirection: 'row', alignItems: 'center'},
+  backBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: '#111827',
+  },
+  backText: {fontSize: 13, color: '#fff', fontWeight: '900'},
+  title: {color: '#fff', fontSize: 18, fontWeight: '900'},
+  sub: {color: '#9ca3af', fontWeight: '700', marginTop: 2, fontSize: 12},
+
+  amountBox: {
+    marginTop: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: '#050814',
+    padding: 14,
+    alignItems: 'center',
+  },
+  amountLabel: {color: '#9ca3af', fontWeight: '900', fontSize: 12},
+  amountText: {color: '#fff', fontSize: 44, fontWeight: '900', marginTop: 6},
+  amountHint: {marginTop: 6, color: '#9ca3af', fontSize: 12},
+
+  keypad: {flex: 1, justifyContent: 'center', marginTop: 12},
+  grid: {flexDirection: 'row', flexWrap: 'wrap', gap: 10},
+  key: {
+    width: '31.8%',
+    height: 64,
+    borderRadius: 16,
+    backgroundColor: '#0b1222',
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyAlt: {backgroundColor: '#111827'},
+  keyText: {color: '#fff', fontSize: 22, fontWeight: '900'},
+
+  bottomRow: {flexDirection: 'row', marginTop: 8},
+  continueBtn: {
+    flex: 1,
+    backgroundColor: GOLD,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  continueText: {color: '#020617', fontWeight: '900', fontSize: 16},
+});
