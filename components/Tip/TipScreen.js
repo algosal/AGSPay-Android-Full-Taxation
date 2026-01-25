@@ -1,6 +1,14 @@
-// components/Tip/TipScreen.js
+// FILE: components/Tip/TipScreen.js
 import React, {useMemo, useState} from 'react';
-import {Alert, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
+import {
+  Alert,
+  Dimensions,
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 const GOLD = '#d4af37';
 
@@ -13,8 +21,8 @@ function formatMoneyFromDigits(digits) {
   };
 }
 
-export default function TipScreen({chargeData, onBack, onDone, theme}) {
-  // tip digits represent cents (same as your AmountEntry approach)
+export default function TipScreen({chargeData, onBack, onDone}) {
+  // tip digits represent cents
   const [digits, setDigits] = useState('0');
 
   const money = useMemo(() => formatMoneyFromDigits(digits), [digits]);
@@ -30,9 +38,9 @@ export default function TipScreen({chargeData, onBack, onDone, theme}) {
 
   function backspace() {
     setDigits(prev => {
-      const s = String(prev || '0');
+      const s = String(prev || '0').replace(/[^\d]/g, '');
       if (s.length <= 1) return '0';
-      return s.slice(0, -1);
+      return s.slice(0, -1) || '0';
     });
   }
 
@@ -45,7 +53,6 @@ export default function TipScreen({chargeData, onBack, onDone, theme}) {
       Alert.alert('Navigation error', 'onDone not wired.');
       return;
     }
-
     // Tip can be $0.00 — allow it.
     onDone({tipCents: Number(money.cents || 0)});
   }
@@ -71,14 +78,24 @@ export default function TipScreen({chargeData, onBack, onDone, theme}) {
     ['⌫', backspace, 'alt'],
   ];
 
-  return (
-    <View style={styles.root}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backText}>Back</Text>
-        </TouchableOpacity>
+  // ✅ Deterministic keypad sizing (fixes “off” layout on Android / Fabric)
+  const {width: screenW, height: screenH} = Dimensions.get('window');
+  const pad = 16;
+  const gap = 10;
+  const gridCols = 3;
 
-        <View style={{flex: 1, alignItems: 'center'}}>
+  const usableW = screenW - pad * 2;
+  const btnW = Math.floor((usableW - gap * (gridCols - 1)) / gridCols);
+  const btnH = Math.min(btnW, Math.floor((screenH * 0.52) / 4) - gap);
+
+  return (
+    <SafeAreaView style={styles.root}>
+      <View style={styles.header}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+
+        <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
           <Text style={styles.title}>Add Tip</Text>
           <Text style={styles.sub} numberOfLines={1}>
             {subtitle}
@@ -96,13 +113,21 @@ export default function TipScreen({chargeData, onBack, onDone, theme}) {
         <Text style={styles.amountHint}>Tap numbers to set tip</Text>
       </View>
 
-      <View style={styles.keypad}>
-        <View style={styles.grid}>
+      <View style={[styles.keypadWrap, {paddingHorizontal: pad}]}>
+        <View style={[styles.grid, {gap}]}>
           {keys.map(([label, fn, variant], idx) => (
-            <TouchableOpacity
+            <Pressable
               key={`${label}-${idx}`}
-              style={[styles.key, variant === 'alt' ? styles.keyAlt : null]}
-              onPress={fn}>
+              onPress={fn}
+              style={({pressed}) => [
+                styles.key,
+                {
+                  width: btnW,
+                  height: btnH,
+                  opacity: pressed ? 0.85 : 1,
+                  backgroundColor: variant === 'alt' ? '#111827' : '#0b1222',
+                },
+              ]}>
               <Text
                 style={[
                   styles.keyText,
@@ -110,23 +135,34 @@ export default function TipScreen({chargeData, onBack, onDone, theme}) {
                 ]}>
                 {label}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           ))}
         </View>
       </View>
 
-      <View style={styles.bottomRow}>
-        <TouchableOpacity style={styles.continueBtn} onPress={proceed}>
+      <View style={[styles.bottomRow, {paddingHorizontal: pad}]}>
+        <Pressable
+          onPress={proceed}
+          style={({pressed}) => [
+            styles.continueBtn,
+            {opacity: pressed ? 0.9 : 1},
+          ]}>
           <Text style={styles.continueText}>Continue</Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {flex: 1, backgroundColor: '#020617', padding: 16},
-  header: {flexDirection: 'row', alignItems: 'center'},
+  root: {flex: 1, backgroundColor: '#020617'},
+  header: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   backBtn: {
     paddingVertical: 8,
     paddingHorizontal: 12,
@@ -140,7 +176,8 @@ const styles = StyleSheet.create({
   sub: {color: '#9ca3af', fontWeight: '700', marginTop: 2, fontSize: 12},
 
   amountBox: {
-    marginTop: 14,
+    marginHorizontal: 16,
+    marginTop: 6,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#1f2937',
@@ -152,24 +189,23 @@ const styles = StyleSheet.create({
   amountText: {color: '#fff', fontSize: 44, fontWeight: '900', marginTop: 6},
   amountHint: {marginTop: 6, color: '#9ca3af', fontSize: 12},
 
-  keypad: {flex: 1, justifyContent: 'center', marginTop: 12},
-  grid: {flexDirection: 'row', flexWrap: 'wrap', gap: 10},
+  keypadWrap: {flex: 1, justifyContent: 'center', marginTop: 10},
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
   key: {
-    width: '31.8%',
-    height: 64,
     borderRadius: 16,
-    backgroundColor: '#0b1222',
     borderWidth: 1,
     borderColor: '#1f2937',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  keyAlt: {backgroundColor: '#111827'},
   keyText: {color: '#fff', fontSize: 22, fontWeight: '900'},
 
-  bottomRow: {flexDirection: 'row', marginTop: 8},
+  bottomRow: {paddingBottom: 14},
   continueBtn: {
-    flex: 1,
     backgroundColor: GOLD,
     borderRadius: 16,
     paddingVertical: 14,

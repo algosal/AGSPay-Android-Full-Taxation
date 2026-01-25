@@ -1,3 +1,4 @@
+// FILE: App.js
 import React, {useMemo, useRef, useState} from 'react';
 import {Alert, SafeAreaView, StatusBar, View} from 'react-native';
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
@@ -100,6 +101,9 @@ export default function App() {
   });
   const [isReaderBusy, setIsReaderBusy] = useState(false);
 
+  // ✅ Stripe is enabled only when user taps CONNECT / CHARGE (prevents overlay stealing taps)
+  const [stripeEnabled, setStripeEnabled] = useState(false);
+
   const loginSuccessHandledRef = useRef(false);
 
   function go(next) {
@@ -141,6 +145,7 @@ export default function App() {
     setPaymentNote('');
     setReaderStatus({connected: false, label: ''});
     setIsReaderBusy(false);
+    setStripeEnabled(false);
     go('LOGIN');
   };
 
@@ -163,7 +168,7 @@ export default function App() {
     go('TIP');
   };
 
-  // TipScreen returns payload with method and totals (your TipScreen does that already)
+  // TipScreen returns payload with method and totals
   const handleTipDone = tipPayload => {
     setChargeData(tipPayload);
     go('CHECKOUT');
@@ -176,6 +181,7 @@ export default function App() {
 
   const handlePaymentSuccess = receiptPayload => {
     setReceipt(receiptPayload || null);
+    setStripeEnabled(false);
     go('RECEIPT');
   };
 
@@ -198,6 +204,7 @@ export default function App() {
       createdAtText: new Date().toLocaleString(),
     });
 
+    setStripeEnabled(false);
     go('RECEIPT');
   };
 
@@ -239,6 +246,9 @@ export default function App() {
           chargeData={chargeData}
           onCashReceipt={handleCashReceipt}
           onConnectReader={async () => {
+            // ✅ enable Stripe only when needed
+            setStripeEnabled(true);
+
             if (!paymentRef.current?.connectReaderFlow) {
               Alert.alert('Missing', 'PaymentTerminal ref not ready.');
               return;
@@ -260,6 +270,9 @@ export default function App() {
             }
           }}
           onChargeCard={async () => {
+            // ✅ enable Stripe only when needed
+            setStripeEnabled(true);
+
             if (!paymentRef.current?.startCardPayment) return;
             await paymentRef.current.startCardPayment();
           }}
@@ -301,6 +314,7 @@ export default function App() {
             setReceipt(null);
             setChargeData(null);
             setPaymentNote('');
+            setStripeEnabled(false);
             go('TERMINAL');
           }}
         />
@@ -317,12 +331,8 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       {content}
 
-      {/* 
-        ✅ Stripe Terminal runs ONLY on TERMINAL screen
-        ✅ Mounted as an absolute sibling with pointerEvents="none"
-           so it cannot intercept taps on your Terminal UI (Enter Amount button).
-      */}
-      {isLoggedIn && screen === 'TERMINAL' ? (
+      {/* Stripe Terminal is mounted ONLY when user requests CONNECT/CHARGE */}
+      {isLoggedIn && screen === 'TERMINAL' && stripeEnabled ? (
         <View
           pointerEvents="none"
           style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}>

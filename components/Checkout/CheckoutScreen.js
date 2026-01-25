@@ -1,5 +1,5 @@
-// components/Checkout/CheckoutScreen.js
-import React, {useMemo} from 'react';
+// FILE: components/Checkout/CheckoutScreen.js
+import React, {useMemo, useState} from 'react';
 import {View, Text, TouchableOpacity} from 'react-native';
 import styles from './checkout.styles';
 
@@ -10,22 +10,23 @@ function centsToMoney(cents) {
 export default function CheckoutScreen({
   chargeData,
   onBack,
-  onConfirm,
+
+  // ✅ NEW: split confirm paths
+  onCashConfirm, // should create receipt + navigate to RECEIPT
+  onCardConfirm, // should proceed to card flow (Terminal charge, or whatever you use)
+
   isBusy,
 }) {
   const data = useMemo(() => {
     const d = chargeData || {};
-    const method = String(d.method || 'CARD').toUpperCase();
 
     const subtotalCents = Number(d.subtotalCents || 0);
     const taxCents = Number(d.taxCents || 0);
     const albaFeeCents = Number(d.albaFeeCents || 0);
     const tipCents = Number(d.tipCents || 0);
-
     const totalCents = Number(d.totalCents ?? d.grandTotalCents ?? 0);
 
     return {
-      method,
       currency: d.currency || 'usd',
       paymentNote: d.paymentNote || '',
 
@@ -36,11 +37,19 @@ export default function CheckoutScreen({
       totalCents,
 
       totalLabel: d.totalLabel || centsToMoney(totalCents),
+
+      // preserve breakdown fields (so App.js can store them)
+      raw: d,
     };
   }, [chargeData]);
 
-  const confirmLabel =
-    data.method === 'CASH' ? 'Confirm Cash Payment' : 'Confirm Card Payment';
+  // ✅ Employee chooses payment method here
+  const [method, setMethod] = useState(() => {
+    const m = String(chargeData?.method || 'CARD').toUpperCase();
+    return m === 'CASH' ? 'CASH' : 'CARD';
+  });
+
+  const confirmLabel = method === 'CASH' ? 'Complete Cash' : 'Charge Card';
 
   return (
     <View style={styles.screen}>
@@ -56,12 +65,34 @@ export default function CheckoutScreen({
             <View style={{width: 60}} />
           </View>
 
-          <View style={styles.summaryBox}>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Method</Text>
-              <Text style={styles.rowValue}>{data.method}</Text>
-            </View>
+          {/* ✅ Payment method selection */}
+          <View style={{marginTop: 10}}>
+            <Text style={styles.rowLabel}>Payment Method</Text>
 
+            <View style={{flexDirection: 'row', marginTop: 8}}>
+              <TouchableOpacity
+                onPress={() => setMethod('CARD')}
+                style={[
+                  styles.secondaryBtn,
+                  {flex: 1, marginTop: 0, marginRight: 8},
+                  method === 'CARD' ? {borderColor: '#d4af37'} : null,
+                ]}>
+                <Text style={styles.secondaryBtnText}>Card</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setMethod('CASH')}
+                style={[
+                  styles.secondaryBtn,
+                  {flex: 1, marginTop: 0},
+                  method === 'CASH' ? {borderColor: '#d4af37'} : null,
+                ]}>
+                <Text style={styles.secondaryBtnText}>Cash</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.summaryBox}>
             <View style={styles.row}>
               <Text style={styles.rowLabel}>Subtotal</Text>
               <Text style={styles.rowValue}>
@@ -101,7 +132,22 @@ export default function CheckoutScreen({
               styles.primaryBtn,
               isBusy ? styles.primaryBtnDisabled : null,
             ]}
-            onPress={() => onConfirm?.(data)}
+            onPress={() => {
+              // ✅ Build updated chargeData with method
+              const next = {
+                ...(data.raw || {}),
+                method,
+                totalCents: data.totalCents,
+                totalLabel: data.totalLabel,
+              };
+
+              if (method === 'CASH') {
+                onCashConfirm?.(next);
+                return;
+              }
+
+              onCardConfirm?.(next);
+            }}
             disabled={!!isBusy}>
             <Text style={styles.primaryBtnText}>
               {isBusy ? 'Processing…' : confirmLabel}
@@ -109,9 +155,9 @@ export default function CheckoutScreen({
           </TouchableOpacity>
 
           <Text style={styles.note}>
-            {data.method === 'CASH'
-              ? 'Confirm you received cash, then proceed to receipt.'
-              : 'Present / tap the card on the reader when prompted.'}
+            {method === 'CASH'
+              ? 'Confirm you received cash to print the receipt.'
+              : 'Continue to card payment and then print the receipt.'}
           </Text>
         </View>
       </View>

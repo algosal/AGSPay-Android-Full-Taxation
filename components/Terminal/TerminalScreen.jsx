@@ -1,9 +1,9 @@
-// components/Terminal/TerminalScreen.jsx
+// FILE: components/Terminal/TerminalScreen.jsx
 import React, {useEffect, useMemo, useState} from 'react';
-import {View, Text, TouchableOpacity, Alert} from 'react-native';
+import {View, Text, Alert, Pressable} from 'react-native';
 import * as Keychain from 'react-native-keychain';
 
-import terminalStyles, {AG} from './terminal.styles';
+import terminalStyles from './terminal.styles';
 
 async function readAgpaySelection() {
   try {
@@ -21,22 +21,16 @@ function centsToMoney(cents) {
 }
 
 export default function TerminalScreen({
-  paymentNote,
-  setPaymentNote,
-
   onBackToStoreSelect,
-  onGoToTip,
+  onGoToTip, // we will use this as "go to AMOUNT"
 
   onConnectReader,
   onDisconnectReader,
-  onChargeCard,
 
   readerStatus, // { connected: bool, label: string }
   isReaderBusy,
 
-  // Optional: App.js can pass chargeData if you want to show totals here
   chargeData,
-  onCashReceipt, // optional callback if you want cash receipts
 }) {
   const s = terminalStyles;
 
@@ -63,21 +57,25 @@ export default function TerminalScreen({
 
   const totalCents = Number(chargeData?.totalCents || 0);
   const totalLabel =
-    chargeData?.totalLabel || (totalCents ? centsToMoney(totalCents) : null);
+    chargeData?.totalLabel || (totalCents ? centsToMoney(totalCents) : '$0.00');
 
   return (
-    <View style={s.screen}>
-      <View style={s.content}>
-        <View style={s.card}>
+    <View style={s.screen} pointerEvents="auto">
+      <View style={s.content} pointerEvents="auto">
+        <View style={s.card} pointerEvents="auto">
           {/* Header */}
-          <View style={s.headerRow}>
-            <TouchableOpacity
-              onPress={onBackToStoreSelect}
+          <View style={s.headerRow} pointerEvents="auto">
+            <Pressable
+              onPress={() => {
+                console.log('✅ TERMINAL: Back pressed');
+                onBackToStoreSelect?.();
+              }}
+              hitSlop={12}
               style={s.connectChip}>
               <Text style={s.connectChipText}>Back</Text>
-            </TouchableOpacity>
+            </Pressable>
 
-            <View style={{flex: 1, alignItems: 'center'}}>
+            <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
               <View style={s.titleRow}>
                 <Text style={s.titleAG}>AG</Text>
                 <Text style={s.titlePay}>Pay</Text>
@@ -86,11 +84,12 @@ export default function TerminalScreen({
             </View>
 
             {/* Connect/Disconnect chip */}
-            <TouchableOpacity
+            <Pressable
               onPress={async () => {
                 if (isReaderBusy) return;
 
                 try {
+                  console.log('✅ TERMINAL: Connect/Disconnect pressed');
                   if (connected) {
                     await onDisconnectReader?.();
                   } else {
@@ -101,22 +100,20 @@ export default function TerminalScreen({
                   Alert.alert('Terminal error', String(e?.message || e));
                 }
               }}
-              disabled={!!isReaderBusy}
+              hitSlop={12}
               style={s.connectChip}>
               <Text style={s.connectChipText}>
                 {connected ? (
-                  <>
-                    <Text style={s.connectChipTextGold}>CONNECTED</Text>
-                  </>
+                  <Text style={s.connectChipTextGold}>CONNECTED</Text>
                 ) : (
                   'CONNECT'
                 )}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
           {/* Status */}
-          <View style={s.dividerTop}>
+          <View style={s.dividerTop} pointerEvents="none">
             <View style={s.row}>
               <Text style={s.rowLabel}>Reader</Text>
               <Text style={s.rowValue}>{statusLabel}</Text>
@@ -129,88 +126,23 @@ export default function TerminalScreen({
             ) : null}
           </View>
 
-          {/* Amount summary (optional) */}
-          {totalLabel ? (
-            <View style={s.bigAmountBox}>
-              <Text style={s.bigAmount}>{totalLabel}</Text>
-              <Text style={s.bigAmountSub}>Current total (from checkout)</Text>
-            </View>
-          ) : (
-            <View style={s.bigAmountBox}>
-              <Text style={s.bigAmount}>$0.00</Text>
-              <Text style={s.bigAmountSub}>
-                Enter amount to begin (Tip flow)
-              </Text>
-            </View>
-          )}
-
-          {/* Continue to amount/tip flow */}
-          <TouchableOpacity onPress={() => onGoToTip?.()} style={s.primaryBtn}>
-            <Text style={s.primaryBtnText}>Enter Amount</Text>
-          </TouchableOpacity>
-
-          {/* Payment action buttons */}
-          <TouchableOpacity
-            onPress={async () => {
-              // CASH path: no Stripe. You can create a receipt in App.js.
-              const amt = Number(chargeData?.totalCents || 0);
-
-              if (!amt || amt < 1) {
-                Alert.alert(
-                  'No amount',
-                  'Enter amount first (then Tip + Checkout) before completing cash.',
-                );
-                return;
-              }
-
-              if (typeof onCashReceipt !== 'function') {
-                Alert.alert(
-                  'Cash complete',
-                  'Cash path is enabled, but onCashReceipt is not wired in App.js.',
-                );
-                return;
-              }
-
-              onCashReceipt();
+          {/* ✅ Tap-to-enter amount (no button) */}
+          <Pressable
+            onPress={() => {
+              console.log('✅ TERMINAL: Amount box pressed -> NAV to AMOUNT');
+              onGoToTip?.(); // App.js already maps this to go('AMOUNT')
             }}
-            style={s.secondaryBtn}>
-            <Text style={s.secondaryBtnText}>Complete as Cash</Text>
-          </TouchableOpacity>
+            hitSlop={16}
+            style={s.bigAmountBox}>
+            <Text style={s.bigAmount}>{totalLabel}</Text>
+            <Text style={s.bigAmountSub}>
+              Tap amount to enter (then Tip → Payment Method → Receipt)
+            </Text>
+          </Pressable>
 
-          <TouchableOpacity
-            onPress={async () => {
-              const amt = Number(chargeData?.totalCents || 0);
-
-              if (!amt || amt < 1) {
-                Alert.alert(
-                  'No amount',
-                  'Enter amount first (then Tip + Checkout) before charging card.',
-                );
-                return;
-              }
-
-              if (!connected) {
-                Alert.alert('Reader not connected', 'Tap CONNECT first.');
-                return;
-              }
-
-              if (typeof onChargeCard !== 'function') {
-                Alert.alert(
-                  'Missing wiring',
-                  'onChargeCard not configured. Check App.js.',
-                );
-                return;
-              }
-
-              await onChargeCard();
-            }}
-            style={s.primaryBtn}>
-            <Text style={s.primaryBtnText}>Charge Card (Tap to Pay)</Text>
-          </TouchableOpacity>
-
-          <Text style={[s.statusText, {marginTop: 10}]}>
-            Card payments require Tap to Pay connection. Cash creates a local
-            receipt only.
+          {/* Helper text only */}
+          <Text style={[s.statusText, {marginTop: 10}]} pointerEvents="none">
+            Flow: Amount → Tip → Choose Cash/Card → Receipt
           </Text>
         </View>
       </View>
