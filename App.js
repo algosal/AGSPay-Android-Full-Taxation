@@ -149,61 +149,103 @@ export default function App() {
     go('LOGIN');
   };
 
-  // Amount -> chargeData subtotal
+  // AMOUNT -> sets base totals
   const handleAmountDone = payload => {
     const subtotalCents = Number(payload?.amountCents || 0);
 
-    setChargeData({
-      method: 'CARD', // default; TipScreen can set CASH
+    const base = {
+      method: 'CARD', // default, Checkout can change this
       currency: 'usd',
+
       subtotalCents,
       taxCents: 0,
       albaFeeCents: 0,
       tipCents: 0,
+
       totalCents: subtotalCents,
       totalLabel: centsToMoney(subtotalCents),
-      paymentNote: paymentNote || '',
-    });
 
+      paymentNote: paymentNote || '',
+    };
+
+    setChargeData(base);
     go('TIP');
   };
 
-  // TipScreen returns payload with method and totals
+  // ✅ IMPORTANT FIX:
+  // TipScreen currently returns { tipCents } only.
+  // We must MERGE tip into existing chargeData and recompute total.
   const handleTipDone = tipPayload => {
-    setChargeData(tipPayload);
+    setChargeData(prev => {
+      const p = prev || {};
+      const subtotalCents = Number(p.subtotalCents || 0);
+      const taxCents = Number(p.taxCents || 0);
+      const albaFeeCents = Number(p.albaFeeCents || 0);
+      const tipCents = Number(tipPayload?.tipCents || 0);
+
+      const totalCents = subtotalCents + taxCents + albaFeeCents + tipCents;
+
+      return {
+        ...p,
+        tipCents,
+        totalCents,
+        totalLabel: centsToMoney(totalCents),
+      };
+    });
+
     go('CHECKOUT');
   };
 
-  const handleCheckoutConfirm = confirmedData => {
-    setChargeData(confirmedData);
-    go('TERMINAL');
-  };
+  // CASH: create receipt + go to RECEIPT
+  const handleCashConfirm = dataFromCheckout => {
+    const d = dataFromCheckout || chargeData || {};
+    const amt = Number(d.totalCents || 0);
 
-  const handlePaymentSuccess = receiptPayload => {
-    setReceipt(receiptPayload || null);
-    setStripeEnabled(false);
-    go('RECEIPT');
-  };
-
-  const handleCashReceipt = () => {
-    const amt = Number(chargeData?.totalCents || 0);
     if (!amt || amt < 1) {
       Alert.alert('No amount', 'Enter an amount first.');
       return;
     }
 
+    setChargeData(d);
+
     setReceipt({
+      ...d,
       method: 'CASH',
       paymentMethod: 'CASH',
       amountCents: amt,
-      amountText: chargeData?.totalLabel || centsToMoney(amt),
-      currency: chargeData?.currency || 'usd',
+      amountText: d.totalLabel || centsToMoney(amt),
       totalCents: amt,
       grandTotalCents: amt,
-      breakdown: chargeData || null,
+      breakdown: d || null,
       createdAtText: new Date().toLocaleString(),
     });
 
+    setStripeEnabled(false);
+    go('RECEIPT');
+  };
+
+  // CARD: set method + go to TERMINAL for connect/charge
+  const handleCardConfirm = dataFromCheckout => {
+    const d = dataFromCheckout || chargeData || {};
+    const amt = Number(d.totalCents || 0);
+
+    if (!amt || amt < 1) {
+      Alert.alert('No amount', 'Enter an amount first.');
+      return;
+    }
+
+    setChargeData({
+      ...d,
+      method: 'CARD',
+    });
+
+    // Stripe provider stays disabled until CONNECT/CHARGE is tapped on Terminal
+    setStripeEnabled(false);
+    go('TERMINAL');
+  };
+
+  const handlePaymentSuccess = receiptPayload => {
+    setReceipt(receiptPayload || null);
     setStripeEnabled(false);
     go('RECEIPT');
   };
@@ -244,7 +286,6 @@ export default function App() {
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
-          onCashReceipt={handleCashReceipt}
           onConnectReader={async () => {
             // ✅ enable Stripe only when needed
             setStripeEnabled(true);
@@ -291,7 +332,14 @@ export default function App() {
     }
 
     if (screen === 'TIP') {
-      return <TipScreen onBack={() => go('AMOUNT')} onDone={handleTipDone} />;
+      return (
+        <TipScreen
+          chargeData={chargeData}
+          onBack={() => go('AMOUNT')}
+          onDone={handleTipDone}
+          theme={theme}
+        />
+      );
     }
 
     if (screen === 'CHECKOUT') {
@@ -299,7 +347,8 @@ export default function App() {
         <CheckoutScreen
           chargeData={chargeData}
           onBack={() => go('TIP')}
-          onConfirm={handleCheckoutConfirm}
+          onCashConfirm={handleCashConfirm}
+          onCardConfirm={handleCardConfirm}
           isBusy={false}
         />
       );
@@ -310,6 +359,7 @@ export default function App() {
         <ReceiptScreen
           theme={theme}
           receipt={receipt}
+          onBack={() => go('TERMINAL')}
           onDone={() => {
             setReceipt(null);
             setChargeData(null);
