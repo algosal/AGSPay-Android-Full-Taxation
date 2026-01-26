@@ -29,6 +29,18 @@ function nOr0(x) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Safely resolve a cents field from:
+ * - top-level receipt (preferred)
+ * - receipt.breakdown (fallback)
+ */
+function resolveCents(receipt, key) {
+  const r = receipt || {};
+  const b = r.breakdown || {};
+  // Use nullish coalescing so 0 is respected (0 is a valid value)
+  return nOr0(r[key] ?? b[key]);
+}
+
 function buildReceiptHtml(receipt) {
   const r = receipt || {};
 
@@ -42,10 +54,11 @@ function buildReceiptHtml(receipt) {
   const totalText =
     r.totalLabel || r.amountText || money(totalCents) || '(missing)';
 
-  const subtotalCents = nOr0(r.subtotalCents);
-  const taxCents = nOr0(r.taxCents);
-  const albaFeeCents = nOr0(r.albaFeeCents);
-  const tipCents = nOr0(r.tipCents);
+  // ✅ line items can come from receipt.* OR receipt.breakdown.*
+  const subtotalCents = resolveCents(r, 'subtotalCents');
+  const taxCents = resolveCents(r, 'taxCents');
+  const albaFeeCents = resolveCents(r, 'albaFeeCents');
+  const tipCents = resolveCents(r, 'tipCents');
 
   const createdAtText = r.createdAtText ? String(r.createdAtText) : '';
   const corp = r.corporateName ? clipText(r.corporateName, 32) : '';
@@ -77,8 +90,10 @@ function buildReceiptHtml(receipt) {
     {label: 'Subtotal', amount: money(subtotalCents)},
     {label: 'Sales Tax', amount: money(taxCents)},
     {label: 'Service Fee', amount: money(albaFeeCents)},
-    {label: 'Tip', amount: money(tipCents)},
   ];
+
+  // Only show Tip row if it exists or is explicitly provided (including 0 is OK to show, but optional)
+  lineItems.push({label: 'Tip', amount: money(tipCents)});
 
   const itemsHtml = lineItems
     .map(
@@ -242,17 +257,28 @@ export default function ReceiptScreen({receipt, onDone, onBack}) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
 
   useEffect(() => {
+    let mounted = true;
+
     if (receipt) {
       setLocalReceipt(receipt);
       return;
     }
+
     readLastReceipt().then(saved => {
-      if (saved) setLocalReceipt(saved);
+      if (mounted && saved) setLocalReceipt(saved);
     });
+
+    return () => {
+      mounted = false;
+    };
   }, [receipt]);
 
   const handlePrint = useCallback(async () => {
     try {
+      if (!localReceipt) {
+        Alert.alert('No receipt', 'Receipt data is not available yet.');
+        return;
+      }
       const html = buildReceiptHtml(localReceipt);
       await RNPrint.print({html});
     } catch (e) {

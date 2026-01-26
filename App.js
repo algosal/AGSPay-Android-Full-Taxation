@@ -18,6 +18,10 @@ import PaymentTerminal from './components/PaymentTerminal';
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
+// ✅ Tax + Service Fee rules (edit these as needed)
+const TAX_RATE = 0.08875; // 8.875%
+const SERVICE_FEE_RATE = 0.03; // 3%
+
 async function tokenProvider() {
   const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
   const text = await resp.text();
@@ -42,6 +46,11 @@ async function tokenProvider() {
 
 function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
+}
+
+function safeCents(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
 }
 
 export default function App() {
@@ -121,17 +130,27 @@ export default function App() {
 
   // ---------- AMOUNT ----------
   const handleAmountDone = ({amountCents}) => {
-    const subtotalCents = Number(amountCents || 0);
+    const subtotalCents = safeCents(amountCents);
+
+    // ✅ Compute from subtotal
+    const taxCents = safeCents(Math.round(subtotalCents * TAX_RATE));
+    const albaFeeCents = safeCents(
+      Math.round(subtotalCents * SERVICE_FEE_RATE),
+    );
+
+    const totalCents = safeCents(subtotalCents + taxCents + albaFeeCents);
+
     setChargeData({
-      method: 'CASH',
+      method: 'CASH', // still default until Checkout chooses card
       currency: 'usd',
       subtotalCents,
-      taxCents: 0,
-      albaFeeCents: 0,
+      taxCents,
+      albaFeeCents,
       tipCents: 0,
-      totalCents: subtotalCents,
-      totalLabel: centsToMoney(subtotalCents),
+      totalCents,
+      totalLabel: centsToMoney(totalCents),
     });
+
     go('TIP');
   };
 
@@ -142,14 +161,17 @@ export default function App() {
       taxCents: 0,
       albaFeeCents: 0,
       tipCents: 0,
+      currency: 'usd',
     };
 
-    const tip = Number(tipCents || 0);
-    const totalCents =
-      Number(prev.subtotalCents || 0) +
-      Number(prev.taxCents || 0) +
-      Number(prev.albaFeeCents || 0) +
-      tip;
+    const tip = safeCents(tipCents);
+
+    const totalCents = safeCents(
+      safeCents(prev.subtotalCents) +
+        safeCents(prev.taxCents) +
+        safeCents(prev.albaFeeCents) +
+        tip,
+    );
 
     setChargeData({
       ...prev,
@@ -163,8 +185,10 @@ export default function App() {
 
   // ---------- CASH ----------
   const handleCashReceipt = data => {
+    // Ensure receipt contains the line items so ReceiptScreen prints them.
+    const d = data || chargeData || {};
     setReceipt({
-      ...(data || {}),
+      ...(d || {}),
       method: 'CASH',
       paymentMethod: 'CASH',
       createdAtText: new Date().toLocaleString(),
@@ -210,6 +234,7 @@ export default function App() {
   };
 
   const handleCardConfirm = async data => {
+    // data is chargeData from CheckoutScreen; keep it as the breakdown for PaymentTerminal.
     setChargeData(data);
     go('TERMINAL'); // keep employee on Terminal screen
     // important: run after navigation kicks in so Stripe can mount
@@ -217,7 +242,20 @@ export default function App() {
   };
 
   const handlePaymentSuccess = receiptPayload => {
-    setReceipt(receiptPayload);
+    // Ensure receipt includes the line items used by ReceiptScreen.
+    // PaymentTerminal already includes breakdown; this makes printing deterministic.
+    const b = receiptPayload?.breakdown || chargeData || {};
+
+    setReceipt({
+      ...(receiptPayload || {}),
+      subtotalCents: safeCents(
+        receiptPayload?.subtotalCents ?? b.subtotalCents,
+      ),
+      taxCents: safeCents(receiptPayload?.taxCents ?? b.taxCents),
+      albaFeeCents: safeCents(receiptPayload?.albaFeeCents ?? b.albaFeeCents),
+      tipCents: safeCents(receiptPayload?.tipCents ?? b.tipCents),
+    });
+
     setStripeEnabled(false);
     setIsReaderBusy(false);
     go('RECEIPT');
