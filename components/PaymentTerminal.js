@@ -1,4 +1,4 @@
-// components/PaymentTerminal.js
+// FILE: components/PaymentTerminal.js
 import React, {
   forwardRef,
   useCallback,
@@ -18,12 +18,10 @@ import {
 const CREATE_INTENT_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
-// ✅ set true temporarily for simulation
-const FORCE_SIMULATED_READER = false;
-
-// ✅ Your LIVE Location ID
+// ✅ LIVE Location ID (tml_...)
 const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 
+// ---------------------- helpers ----------------------
 async function requestLocationPermissionIfNeeded() {
   if (Platform.OS !== 'android') return true;
 
@@ -55,6 +53,11 @@ async function readAgpayAuthToken() {
   }
 }
 
+/**
+ * Frontend-only fix:
+ * - Lambda returns: { statusCode, body: "{\"client_secret\":\"...\"}" }
+ * - We parse deterministically and fail loudly if parsing is the issue.
+ */
 async function createIntentOnBackend({amountCents, currency, metadata}) {
   const jwt = await readAgpayAuthToken();
 
@@ -78,13 +81,34 @@ async function createIntentOnBackend({amountCents, currency, metadata}) {
   const text = await resp.text();
   console.log('💳 create-intent → HTTP:', resp.status, text);
 
-  if (!resp.ok) throw new Error(`Create intent failed: HTTP ${resp.status}`);
+  if (!resp.ok) {
+    throw new Error(`Create intent failed: HTTP ${resp.status}. Body: ${text}`);
+  }
 
-  let data = null;
+  let outer;
   try {
-    data = JSON.parse(text);
-  } catch {
-    data = null;
+    outer = JSON.parse(String(text || '').trim());
+  } catch (e) {
+    throw new Error(
+      `Create intent returned non-JSON. HTTP ${resp.status}. Body: ${text}`,
+    );
+  }
+
+  let data = outer;
+
+  if (outer && typeof outer.body === 'string') {
+    const bodyText = String(outer.body || '').trim();
+    try {
+      data = JSON.parse(bodyText);
+    } catch (e) {
+      throw new Error(
+        `Create intent outer.body was not valid JSON. outer.body: ${outer.body}`,
+      );
+    }
+  }
+
+  if (outer && outer.body && typeof outer.body === 'object') {
+    data = outer.body;
   }
 
   const clientSecret =
@@ -95,9 +119,17 @@ async function createIntentOnBackend({amountCents, currency, metadata}) {
     data?.paymentIntent?.clientSecret;
 
   if (!clientSecret) {
-    console.log('❌ create-intent missing client_secret:', data);
-    throw new Error('Missing client_secret from create-intent response');
+    throw new Error(
+      `Missing client_secret. HTTP ${resp.status}. outer=${JSON.stringify(
+        outer,
+      )} data=${JSON.stringify(data)}`,
+    );
   }
+
+  console.log(
+    '✅ create-intent clientSecret length:',
+    String(clientSecret).length,
+  );
 
   return {clientSecret, raw: data};
 }
@@ -113,6 +145,7 @@ async function readAgpaySelection() {
   }
 }
 
+// ---------------------- component ----------------------
 const PaymentTerminal = forwardRef(
   (
     {
@@ -123,6 +156,7 @@ const PaymentTerminal = forwardRef(
       amountCents = 0,
       currency = 'usd',
       amountLabel,
+      onTerminalStatusLine,
     },
     ref,
   ) => {
@@ -136,7 +170,6 @@ const PaymentTerminal = forwardRef(
       cancelDiscovering,
       setTapToPayUxConfiguration,
       supportsReadersOfType,
-      setSimulatedCard,
       retrievePaymentIntent,
       collectPaymentMethod,
       confirmPaymentIntent,
@@ -149,14 +182,26 @@ const PaymentTerminal = forwardRef(
     const [terminalReady, setTerminalReady] = useState(false);
     const [statusLine, setStatusLine] = useState('Not initialized');
 
+    // Always-current refs to avoid stale React state timing bugs
     const latestReadersRef = useRef([]);
     const tapToPaySupportedRef = useRef(null);
+    const connectedReaderRef = useRef(null);
+    const connectingRef = useRef(false);
+
+    // publish statusLine to parent (optional)
+    useEffect(() => {
+      onTerminalStatusLine?.(statusLine);
+    }, [onTerminalStatusLine, statusLine]);
 
     useEffect(() => {
       if (Array.isArray(discoveredReaders)) {
         latestReadersRef.current = discoveredReaders;
       }
     }, [discoveredReaders]);
+
+    useEffect(() => {
+      connectedReaderRef.current = connectedReader || null;
+    }, [connectedReader]);
 
     const publishReaderStatus = useCallback(
       next => {
@@ -214,40 +259,81 @@ const PaymentTerminal = forwardRef(
       terminalReady,
     ]);
 
+    async function waitForReaders({timeoutMs = 6500, intervalMs = 250} = {}) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const readers = latestReadersRef.current || [];
+        if (readers.length > 0) return readers;
+        await new Promise(r => setTimeout(r, intervalMs));
+      }
+      return [];
+    }
+
+    async function waitForConnectedReader({
+      timeoutMs = 5000,
+      intervalMs = 150,
+    } = {}) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (connectedReaderRef.current) return connectedReaderRef.current;
+        await new Promise(r => setTimeout(r, intervalMs));
+      }
+      return null;
+    }
+
     const connectReaderFlow = useCallback(async () => {
+      if (connectingRef.current) {
+        console.log('⚠️ connectReaderFlow ignored (already connecting)');
+        return true;
+      }
+
+      if (connectedReaderRef.current) {
+        console.log('✅ connectReaderFlow: already connected');
+        setStatusLine('Reader already connected');
+        publishReaderStatus({
+          connected: true,
+          label:
+            connectedReaderRef.current?.label ||
+            connectedReaderRef.current?.serialNumber ||
+            'Tap to Pay Connected',
+        });
+        return true;
+      }
+
+      connectingRef.current = true;
+
       try {
         await ensureInit();
 
         const ok = await requestLocationPermissionIfNeeded();
-        if (!ok) return;
+        if (!ok) return false;
 
         const supported = tapToPaySupportedRef.current;
-        if (supported === false && !FORCE_SIMULATED_READER) {
+        if (supported === false) {
           Alert.alert(
             'Not supported',
             'This device does not support Tap to Pay.',
           );
-          return;
+          return false;
         }
 
-        if (!FORCE_SIMULATED_READER) {
-          if (
-            !LIVE_LOCATION_ID ||
-            !String(LIVE_LOCATION_ID).startsWith('tml_')
-          ) {
-            Alert.alert(
-              'Location ID missing',
-              'LIVE_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
-            );
-            return;
-          }
+        if (!LIVE_LOCATION_ID || !String(LIVE_LOCATION_ID).startsWith('tml_')) {
+          Alert.alert(
+            'Location ID missing',
+            'LIVE_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+          );
+          return false;
         }
+
+        try {
+          await cancelDiscovering();
+        } catch {}
 
         setStatusLine('Discovering Tap to Pay…');
 
         const {error: discErr} = await discoverReaders({
           discoveryMethod: 'tapToPay',
-          simulated: !!FORCE_SIMULATED_READER,
+          simulated: false,
         });
 
         if (discErr) {
@@ -255,35 +341,34 @@ const PaymentTerminal = forwardRef(
           throw new Error(discErr?.message || 'discoverReaders failed');
         }
 
-        const readers = latestReadersRef.current || [];
-        console.log('✅ discovered tapToPay readers:', readers);
+        const readers = await waitForReaders();
+        console.log('✅ discovered tapToPay readers (waited):', readers);
 
-        const chosen = FORCE_SIMULATED_READER
-          ? readers[0]
-          : readers.find(r => !r?.simulated) || readers[0];
+        const chosen = readers.find(r => !r?.simulated) || readers[0];
 
         if (!chosen) {
-          Alert.alert('No reader found');
+          setStatusLine('No reader found');
           publishReaderStatus({connected: false, label: ''});
-          return;
-        }
-
-        if (!FORCE_SIMULATED_READER && chosen?.simulated) {
           Alert.alert(
-            'Still simulated',
-            'SDK returned only simulated readers. Check device eligibility and Stripe config.',
+            'No reader found',
+            'Move the device slightly and try again.',
           );
-          return;
+          return false;
         }
 
-        const locationIdToUse = FORCE_SIMULATED_READER
-          ? chosen.locationId
-          : LIVE_LOCATION_ID;
+        if (chosen?.simulated) {
+          setStatusLine('Only simulated reader found');
+          Alert.alert(
+            'Reader not available',
+            'Only a simulated reader was found. Confirm Tap to Pay eligibility and Stripe config.',
+          );
+          return false;
+        }
 
         setStatusLine('Connecting Tap to Pay…');
 
         const {error: connErr} = await connectReader(
-          {reader: chosen, locationId: locationIdToUse},
+          {reader: chosen, locationId: LIVE_LOCATION_ID},
           'tapToPay',
         );
 
@@ -292,22 +377,31 @@ const PaymentTerminal = forwardRef(
           throw new Error(connErr?.message || 'connectReader failed');
         }
 
-        if (FORCE_SIMULATED_READER && typeof setSimulatedCard === 'function') {
-          await setSimulatedCard({number: '4242424242424242', type: 'credit'});
+        const cr = await waitForConnectedReader();
+        if (!cr) {
+          setStatusLine('Connected, but state not ready');
+          publishReaderStatus({
+            connected: true,
+            label:
+              chosen?.label || chosen?.serialNumber || 'Tap to Pay Connected',
+          });
+          return true;
         }
 
         setStatusLine('Reader connected');
         publishReaderStatus({
           connected: true,
-          label:
-            chosen?.label || chosen?.serialNumber || 'Tap to Pay Connected',
+          label: cr?.label || cr?.serialNumber || 'Tap to Pay Connected',
         });
+        return true;
       } catch (e) {
         console.log('connectReaderFlow error:', e);
         setStatusLine(`Connect failed: ${String(e?.message || e)}`);
         publishReaderStatus({connected: false, label: ''});
         Alert.alert('Connect Failed', String(e?.message || e));
+        return false;
       } finally {
+        connectingRef.current = false;
         try {
           await cancelDiscovering();
         } catch {}
@@ -318,26 +412,37 @@ const PaymentTerminal = forwardRef(
       discoverReaders,
       ensureInit,
       publishReaderStatus,
-      setSimulatedCard,
     ]);
 
     const disconnectReaderFlow = useCallback(async () => {
       try {
+        try {
+          await cancelDiscovering();
+        } catch {}
         await disconnectReader();
+        connectedReaderRef.current = null;
         setStatusLine('Reader disconnected');
         publishReaderStatus({connected: false, label: ''});
       } catch (e) {
         console.log('disconnectReaderFlow error:', e);
         Alert.alert('Disconnect failed', String(e?.message || e));
       }
-    }, [disconnectReader, publishReaderStatus]);
+    }, [cancelDiscovering, disconnectReader, publishReaderStatus]);
 
     const startCardPayment = useCallback(async () => {
       try {
         await ensureInit();
 
-        if (!connectedReader) {
-          Alert.alert('Reader not connected', 'Connect Tap to Pay first.');
+        if (!connectedReaderRef.current) {
+          setStatusLine('Reader not connected — connecting…');
+          const ok = await connectReaderFlow();
+          if (!ok) return;
+          await waitForConnectedReader({timeoutMs: 5000});
+        }
+
+        if (!connectedReaderRef.current) {
+          setStatusLine('Reader not ready');
+          Alert.alert('Reader not ready', 'Please try again in a moment.');
           return;
         }
 
@@ -350,7 +455,6 @@ const PaymentTerminal = forwardRef(
         setStatusLine('Creating PaymentIntent…');
 
         const selection = await readAgpaySelection();
-
         const meta = {
           ...(debugMeta || {}),
           corporateRef: selection?.corporateRef || '',
@@ -371,7 +475,7 @@ const PaymentTerminal = forwardRef(
           throw new Error(retrieved.error?.message || 'Retrieve intent failed');
         }
 
-        setStatusLine('Collecting payment method…');
+        setStatusLine('Tap card now…');
         const collected = await collectPaymentMethod({
           paymentIntent: retrieved?.paymentIntent,
         });
@@ -381,7 +485,7 @@ const PaymentTerminal = forwardRef(
           );
         }
 
-        setStatusLine('Confirming…');
+        setStatusLine('Processing…');
         const confirmed = await confirmPaymentIntent({
           paymentIntent: collected?.paymentIntent,
         });
@@ -421,7 +525,7 @@ const PaymentTerminal = forwardRef(
       breakdown,
       collectPaymentMethod,
       confirmPaymentIntent,
-      connectedReader,
+      connectReaderFlow,
       currency,
       debugMeta,
       ensureInit,
@@ -436,7 +540,7 @@ const PaymentTerminal = forwardRef(
         connectReaderFlow,
         disconnectReaderFlow,
         startCardPayment,
-        isReaderConnected: () => !!connectedReader,
+        isReaderConnected: () => !!connectedReaderRef.current,
         getStatusLine: () => statusLine,
       }),
       [
@@ -444,7 +548,6 @@ const PaymentTerminal = forwardRef(
         disconnectReaderFlow,
         ensureInit,
         startCardPayment,
-        connectedReader,
         statusLine,
       ],
     );
@@ -463,7 +566,6 @@ const PaymentTerminal = forwardRef(
       }
     }, [connectedReader, publishReaderStatus]);
 
-    // ✅ IMPORTANT: render nothing (no duplicated UI / no debug footer)
     return null;
   },
 );

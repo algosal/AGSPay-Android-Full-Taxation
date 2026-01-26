@@ -1,8 +1,8 @@
 // FILE: components/Terminal/TerminalScreen.jsx
+
 import React, {useEffect, useMemo, useState} from 'react';
 import {View, Text, Alert, Pressable} from 'react-native';
 import * as Keychain from 'react-native-keychain';
-
 import terminalStyles from './terminal.styles';
 
 async function readAgpaySelection() {
@@ -22,18 +22,17 @@ function centsToMoney(cents) {
 
 export default function TerminalScreen({
   onBackToStoreSelect,
-  onGoToTip, // we will use this as "go to AMOUNT"
-
+  onGoToTip,
   onConnectReader,
   onDisconnectReader,
-
-  readerStatus, // { connected: bool, label: string }
+  readerStatus,
   isReaderBusy,
-
   chargeData,
+
+  // ✅ OPTIONAL: if you wire this from App.js (see note below)
+  terminalStatusLine,
 }) {
   const s = terminalStyles;
-
   const [sel, setSel] = useState(null);
 
   useEffect(() => {
@@ -59,17 +58,16 @@ export default function TerminalScreen({
   const totalLabel =
     chargeData?.totalLabel || (totalCents ? centsToMoney(totalCents) : '$0.00');
 
+  // ✅ what to show as the “big status”
+  const bigStatus = terminalStatusLine || (isReaderBusy ? 'Working…' : '');
+
   return (
     <View style={s.screen} pointerEvents="auto">
       <View style={s.content} pointerEvents="auto">
         <View style={s.card} pointerEvents="auto">
-          {/* Header */}
           <View style={s.headerRow} pointerEvents="auto">
             <Pressable
-              onPress={() => {
-                console.log('✅ TERMINAL: Back pressed');
-                onBackToStoreSelect?.();
-              }}
+              onPress={() => onBackToStoreSelect?.()}
               hitSlop={12}
               style={s.connectChip}>
               <Text style={s.connectChipText}>Back</Text>
@@ -83,20 +81,13 @@ export default function TerminalScreen({
               <Text style={s.subtitle}>{subtitle}</Text>
             </View>
 
-            {/* Connect/Disconnect chip */}
             <Pressable
               onPress={async () => {
                 if (isReaderBusy) return;
-
                 try {
-                  console.log('✅ TERMINAL: Connect/Disconnect pressed');
-                  if (connected) {
-                    await onDisconnectReader?.();
-                  } else {
-                    await onConnectReader?.();
-                  }
+                  if (connected) await onDisconnectReader?.();
+                  else await onConnectReader?.();
                 } catch (e) {
-                  console.log('connect/disconnect error:', e);
                   Alert.alert('Terminal error', String(e?.message || e));
                 }
               }}
@@ -112,26 +103,30 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
-          {/* Status */}
           <View style={s.dividerTop} pointerEvents="none">
             <View style={s.row}>
               <Text style={s.rowLabel}>Reader</Text>
               <Text style={s.rowValue}>{statusLabel}</Text>
             </View>
 
-            {isReaderBusy ? (
-              <Text style={[s.statusText, {marginTop: 8}]}>
-                Working… please wait
+            {/* ✅ Big indicator */}
+            {bigStatus ? (
+              <Text
+                style={[
+                  s.statusText,
+                  {
+                    marginTop: 10,
+                    fontSize: 18,
+                    fontWeight: '900',
+                  },
+                ]}>
+                {bigStatus}
               </Text>
             ) : null}
           </View>
 
-          {/* ✅ Tap-to-enter amount (no button) */}
           <Pressable
-            onPress={() => {
-              console.log('✅ TERMINAL: Amount box pressed -> NAV to AMOUNT');
-              onGoToTip?.(); // App.js already maps this to go('AMOUNT')
-            }}
+            onPress={() => onGoToTip?.()}
             hitSlop={16}
             style={s.bigAmountBox}>
             <Text style={s.bigAmount}>{totalLabel}</Text>
@@ -140,7 +135,6 @@ export default function TerminalScreen({
             </Text>
           </Pressable>
 
-          {/* Helper text only */}
           <Text style={[s.statusText, {marginTop: 10}]} pointerEvents="none">
             Flow: Amount → Tip → Choose Cash/Card → Receipt
           </Text>

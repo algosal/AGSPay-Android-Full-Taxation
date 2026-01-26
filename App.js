@@ -21,51 +21,23 @@ const CONNECTION_TOKEN_URL =
 async function tokenProvider() {
   const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
   const text = await resp.text();
-
   if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
 
-  let data = null;
+  let data = {};
   try {
     data = JSON.parse(text);
   } catch {}
 
+  // supports both {secret:"..."} and {body:"{secret:'...'}"}
   let secret = data?.secret || null;
-
-  if (!secret && data?.body) {
+  if (!secret && typeof data?.body === 'string') {
     try {
-      const body = JSON.parse(data.body);
-      secret = body?.secret || null;
+      secret = JSON.parse(data.body)?.secret || null;
     } catch {}
   }
 
-  if (!secret) throw new Error('Missing connection token secret');
+  if (!secret) throw new Error('Missing connection token');
   return secret;
-}
-
-function normalizeLoginPayload(payload) {
-  if (payload && typeof payload === 'object' && payload.token) return payload;
-
-  if (
-    payload &&
-    typeof payload === 'object' &&
-    typeof payload.body === 'string'
-  ) {
-    try {
-      return JSON.parse(payload.body);
-    } catch {
-      return null;
-    }
-  }
-
-  if (typeof payload === 'string') {
-    try {
-      return JSON.parse(payload);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
 }
 
 function centsToMoney(cents) {
@@ -87,11 +59,11 @@ export default function App() {
   );
 
   const paymentRef = useRef(null);
+  const startingCardRef = useRef(false);
 
   const [screen, setScreen] = useState('LOGIN');
   const [session, setSession] = useState(null);
 
-  const [paymentNote, setPaymentNote] = useState('');
   const [chargeData, setChargeData] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -101,161 +73,162 @@ export default function App() {
   });
   const [isReaderBusy, setIsReaderBusy] = useState(false);
 
-  // ✅ Stripe is enabled only when user taps CONNECT / CHARGE (prevents overlay stealing taps)
-  const [stripeEnabled, setStripeEnabled] = useState(false);
+  // ✅ New: drive the “big status” UI on TerminalScreen
+  const [terminalStatusLine, setTerminalStatusLine] = useState('');
 
-  const loginSuccessHandledRef = useRef(false);
+  // mount Stripe only when needed
+  const [stripeEnabled, setStripeEnabled] = useState(false);
 
   function go(next) {
     console.log('🧭 NAV =>', next);
     setScreen(next);
   }
 
-  const handleLoginSuccess = payloadFromLogin => {
-    try {
-      if (loginSuccessHandledRef.current) return;
-
-      const normalized = normalizeLoginPayload(payloadFromLogin);
-      const token = normalized?.token || null;
-
-      if (!token) {
-        Alert.alert('Login failed', 'Missing token in login response.');
-        return;
-      }
-
-      loginSuccessHandledRef.current = true;
-
-      setSession({
-        token,
-        ownerId: normalized?.profile?.userId || normalized?.ownerId || null,
-        profile: normalized?.profile || null,
-      });
-
-      go('CORP');
-    } catch (e) {
-      Alert.alert('Login failed', String(e?.message || e));
+  async function waitForPaymentRefReady(timeoutMs = 4000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (
+        paymentRef.current?.startCardPayment &&
+        paymentRef.current?.ensureInit
+      )
+        return true;
+      await new Promise(r => setTimeout(r, 120));
     }
+    return false;
+  }
+
+  // ---------- LOGIN ----------
+  const handleLoginSuccess = payload => {
+    const token = payload?.token;
+    if (!token) {
+      Alert.alert('Login failed');
+      return;
+    }
+    setSession({token});
+    go('CORP');
   };
 
   const handleLogout = () => {
-    loginSuccessHandledRef.current = false;
     setSession(null);
-    setReceipt(null);
     setChargeData(null);
-    setPaymentNote('');
+    setReceipt(null);
+    setStripeEnabled(false);
     setReaderStatus({connected: false, label: ''});
     setIsReaderBusy(false);
-    setStripeEnabled(false);
+    setTerminalStatusLine('');
     go('LOGIN');
   };
 
-  // AMOUNT -> sets base totals
-  const handleAmountDone = payload => {
-    const subtotalCents = Number(payload?.amountCents || 0);
-
-    const base = {
-      method: 'CARD', // default, Checkout can change this
+  // ---------- AMOUNT ----------
+  const handleAmountDone = ({amountCents}) => {
+    const subtotalCents = Number(amountCents || 0);
+    setChargeData({
+      method: 'CASH',
       currency: 'usd',
-
       subtotalCents,
       taxCents: 0,
       albaFeeCents: 0,
       tipCents: 0,
-
       totalCents: subtotalCents,
       totalLabel: centsToMoney(subtotalCents),
-
-      paymentNote: paymentNote || '',
-    };
-
-    setChargeData(base);
+    });
     go('TIP');
   };
 
-  // ✅ IMPORTANT FIX:
-  // TipScreen currently returns { tipCents } only.
-  // We must MERGE tip into existing chargeData and recompute total.
-  const handleTipDone = tipPayload => {
-    setChargeData(prev => {
-      const p = prev || {};
-      const subtotalCents = Number(p.subtotalCents || 0);
-      const taxCents = Number(p.taxCents || 0);
-      const albaFeeCents = Number(p.albaFeeCents || 0);
-      const tipCents = Number(tipPayload?.tipCents || 0);
+  // ---------- TIP ----------
+  const handleTipDone = ({tipCents}) => {
+    const prev = chargeData || {
+      subtotalCents: 0,
+      taxCents: 0,
+      albaFeeCents: 0,
+      tipCents: 0,
+    };
 
-      const totalCents = subtotalCents + taxCents + albaFeeCents + tipCents;
+    const tip = Number(tipCents || 0);
+    const totalCents =
+      Number(prev.subtotalCents || 0) +
+      Number(prev.taxCents || 0) +
+      Number(prev.albaFeeCents || 0) +
+      tip;
 
-      return {
-        ...p,
-        tipCents,
-        totalCents,
-        totalLabel: centsToMoney(totalCents),
-      };
+    setChargeData({
+      ...prev,
+      tipCents: tip,
+      totalCents,
+      totalLabel: centsToMoney(totalCents),
     });
 
     go('CHECKOUT');
   };
 
-  // CASH: create receipt + go to RECEIPT
-  const handleCashConfirm = dataFromCheckout => {
-    const d = dataFromCheckout || chargeData || {};
-    const amt = Number(d.totalCents || 0);
-
-    if (!amt || amt < 1) {
-      Alert.alert('No amount', 'Enter an amount first.');
-      return;
-    }
-
-    setChargeData(d);
-
+  // ---------- CASH ----------
+  const handleCashReceipt = data => {
     setReceipt({
-      ...d,
+      ...(data || {}),
       method: 'CASH',
       paymentMethod: 'CASH',
-      amountCents: amt,
-      amountText: d.totalLabel || centsToMoney(amt),
-      totalCents: amt,
-      grandTotalCents: amt,
-      breakdown: d || null,
       createdAtText: new Date().toLocaleString(),
     });
-
-    setStripeEnabled(false);
     go('RECEIPT');
   };
 
-  // CARD: set method + go to TERMINAL for connect/charge
-  const handleCardConfirm = dataFromCheckout => {
-    const d = dataFromCheckout || chargeData || {};
-    const amt = Number(d.totalCents || 0);
+  // ---------- CARD (run entirely via PaymentTerminal, no CardTap screen) ----------
+  const startCardFlowNow = async () => {
+    if (startingCardRef.current) return;
+    startingCardRef.current = true;
 
-    if (!amt || amt < 1) {
-      Alert.alert('No amount', 'Enter an amount first.');
-      return;
+    try {
+      setStripeEnabled(true);
+      setIsReaderBusy(true);
+
+      const ready = await waitForPaymentRefReady();
+      if (!ready) {
+        Alert.alert(
+          'Preparing reader',
+          'Please wait a moment, then press CARD again.',
+        );
+        return;
+      }
+
+      // init once (safe if already initialized)
+      await paymentRef.current.ensureInit?.();
+
+      // connect if needed (PaymentTerminal itself also guards "already connected")
+      const isConnected = await paymentRef.current.isReaderConnected?.();
+      if (!isConnected) {
+        await paymentRef.current.connectReaderFlow?.();
+      }
+
+      // start payment (will not rediscover if already connected)
+      await paymentRef.current.startCardPayment?.();
+    } catch (e) {
+      Alert.alert('Payment failed', String(e?.message || e));
+    } finally {
+      setIsReaderBusy(false);
+      startingCardRef.current = false;
     }
+  };
 
-    setChargeData({
-      ...d,
-      method: 'CARD',
-    });
-
-    // Stripe provider stays disabled until CONNECT/CHARGE is tapped on Terminal
-    setStripeEnabled(false);
-    go('TERMINAL');
+  const handleCardConfirm = async data => {
+    setChargeData(data);
+    go('TERMINAL'); // keep employee on Terminal screen
+    // important: run after navigation kicks in so Stripe can mount
+    setTimeout(startCardFlowNow, 0);
   };
 
   const handlePaymentSuccess = receiptPayload => {
-    setReceipt(receiptPayload || null);
+    setReceipt(receiptPayload);
     setStripeEnabled(false);
+    setIsReaderBusy(false);
     go('RECEIPT');
   };
 
+  // ---------- UI ----------
   const content = (() => {
-    if (screen === 'LOGIN') {
+    if (screen === 'LOGIN')
       return <Login theme={theme} onLoginSuccess={handleLoginSuccess} />;
-    }
 
-    if (screen === 'CORP') {
+    if (screen === 'CORP')
       return (
         <CorporateSelectScreen
           theme={theme}
@@ -263,9 +236,8 @@ export default function App() {
           onCorporatePicked={() => go('STORE')}
         />
       );
-    }
 
-    if (screen === 'STORE') {
+    if (screen === 'STORE')
       return (
         <StoreSelectScreen
           theme={theme}
@@ -274,54 +246,47 @@ export default function App() {
           onStorePicked={() => go('TERMINAL')}
         />
       );
-    }
 
-    if (screen === 'TERMINAL') {
+    if (screen === 'TERMINAL')
       return (
         <TerminalScreen
-          paymentNote={paymentNote}
-          setPaymentNote={setPaymentNote}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
+          terminalStatusLine={terminalStatusLine} // ✅ show big status line
           onConnectReader={async () => {
-            // ✅ enable Stripe only when needed
             setStripeEnabled(true);
-
-            if (!paymentRef.current?.connectReaderFlow) {
-              Alert.alert('Missing', 'PaymentTerminal ref not ready.');
+            const ready = await waitForPaymentRefReady();
+            if (!ready) {
+              Alert.alert('Preparing reader', 'Please try again in a moment.');
               return;
             }
+
             setIsReaderBusy(true);
             try {
-              await paymentRef.current.connectReaderFlow();
+              await paymentRef.current.ensureInit?.();
+              await paymentRef.current.connectReaderFlow?.();
             } finally {
               setIsReaderBusy(false);
             }
           }}
           onDisconnectReader={async () => {
-            if (!paymentRef.current?.disconnectReaderFlow) return;
+            const ready = await waitForPaymentRefReady(1500);
+            if (!ready) return;
+
             setIsReaderBusy(true);
             try {
-              await paymentRef.current.disconnectReaderFlow();
+              await paymentRef.current.disconnectReaderFlow?.();
             } finally {
               setIsReaderBusy(false);
             }
           }}
-          onChargeCard={async () => {
-            // ✅ enable Stripe only when needed
-            setStripeEnabled(true);
-
-            if (!paymentRef.current?.startCardPayment) return;
-            await paymentRef.current.startCardPayment();
-          }}
         />
       );
-    }
 
-    if (screen === 'AMOUNT') {
+    if (screen === 'AMOUNT')
       return (
         <AmountEntryScreen
           theme={theme}
@@ -329,63 +294,59 @@ export default function App() {
           onDone={handleAmountDone}
         />
       );
-    }
 
-    if (screen === 'TIP') {
+    if (screen === 'TIP')
       return (
         <TipScreen
-          chargeData={chargeData}
+          theme={theme}
           onBack={() => go('AMOUNT')}
           onDone={handleTipDone}
-          theme={theme}
         />
       );
-    }
 
-    if (screen === 'CHECKOUT') {
+    if (screen === 'CHECKOUT')
       return (
         <CheckoutScreen
           chargeData={chargeData}
           onBack={() => go('TIP')}
-          onCashConfirm={handleCashConfirm}
+          onCashConfirm={handleCashReceipt}
           onCardConfirm={handleCardConfirm}
-          isBusy={false}
+          isBusy={isReaderBusy}
         />
       );
-    }
 
-    if (screen === 'RECEIPT') {
+    if (screen === 'RECEIPT')
       return (
         <ReceiptScreen
-          theme={theme}
           receipt={receipt}
-          onBack={() => go('TERMINAL')}
           onDone={() => {
             setReceipt(null);
             setChargeData(null);
-            setPaymentNote('');
             setStripeEnabled(false);
+            setIsReaderBusy(false);
+            setTerminalStatusLine('');
             go('TERMINAL');
           }}
         />
       );
-    }
 
     return <View />;
   })();
 
-  const isLoggedIn = !!session?.token;
+  // Mount Stripe only when logged in + enabled + we are on Terminal.
+  // (This prevents background connect/disconnect conflicts.)
+  const shouldMountStripe =
+    !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
   return (
     <SafeAreaView style={{flex: 1, backgroundColor: theme.bg}}>
       <StatusBar barStyle="light-content" />
       {content}
 
-      {/* Stripe Terminal is mounted ONLY when user requests CONNECT/CHARGE */}
-      {isLoggedIn && screen === 'TERMINAL' && stripeEnabled ? (
+      {shouldMountStripe ? (
         <View
-          pointerEvents="none"
-          style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}>
+          style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}
+          pointerEvents="none">
           <StripeTerminalProvider
             tokenProvider={tokenProvider}
             logLevel="verbose">
@@ -394,10 +355,10 @@ export default function App() {
               amountCents={Number(chargeData?.totalCents || 0)}
               currency={chargeData?.currency || 'usd'}
               amountLabel={chargeData?.totalLabel || null}
-              debugMeta={{note: chargeData?.paymentNote || ''}}
               breakdown={chargeData || null}
               onReaderStatusChange={setReaderStatus}
               onPaymentSuccess={handlePaymentSuccess}
+              onTerminalStatusLine={setTerminalStatusLine} // ✅ publish big status
             />
           </StripeTerminalProvider>
         </View>

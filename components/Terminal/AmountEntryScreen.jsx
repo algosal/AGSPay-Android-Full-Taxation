@@ -1,3 +1,5 @@
+// FILE: components/Terminal/AmountEntryScreen.js
+
 import React, {useMemo, useState} from 'react';
 import {
   View,
@@ -46,19 +48,17 @@ export default function AmountEntryScreen({
 
   const pad = 14;
   const gap = 10;
-  const gridCols = 3;
+  const cols = 3;
 
   const usableW = screenW - pad * 2;
-  const btnW = Math.floor((usableW - gap * (gridCols - 1)) / gridCols);
-
-  // keep keypad on screen (no scroll)
+  const btnW = Math.floor((usableW - gap * (cols - 1)) / cols);
   const btnH = Math.min(btnW, Math.floor((screenH * 0.52) / 4) - gap);
 
   function pushDigit(d) {
     setDigits(prev => {
       const p = String(prev || '').replace(/[^\d]/g, '');
       const next = (p + String(d)).slice(0, 10);
-      return next.replace(/^0+/, '') || (next.length ? '0' : '');
+      return next.replace(/^0+/, '') || '';
     });
   }
 
@@ -105,14 +105,20 @@ export default function AmountEntryScreen({
 
   return (
     <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]}>
+      {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={onBack} style={styles.backBtn}>
           <Text style={[styles.backText, {color: t.gold}]}>Back</Text>
         </Pressable>
-        <Text style={[styles.title, {color: t.text}]}>Enter Amount</Text>
+
+        <View style={{flex: 1, alignItems: 'center'}}>
+          <Text style={[styles.title, {color: t.text}]}>Enter Amount</Text>
+        </View>
+
         <View style={{width: 60}} />
       </View>
 
+      {/* Centered Amount Display (matches Tip screen layout) */}
       <View
         style={[
           styles.displayCard,
@@ -129,7 +135,7 @@ export default function AmountEntryScreen({
         </Text>
 
         <Text style={[styles.hint, {color: t.muted}]}>
-          Tap numbers to set dollars and cents
+          Tap numbers to enter amount
         </Text>
       </View>
 
@@ -172,6 +178,7 @@ export default function AmountEntryScreen({
         </View>
       </View>
 
+      {/* Continue */}
       <View style={[styles.actions, {paddingHorizontal: pad}]}>
         <Pressable
           onPress={handleDone}
@@ -194,26 +201,25 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
   },
   backBtn: {width: 60, paddingVertical: 8},
   backText: {fontWeight: '800'},
   title: {fontSize: 18, fontWeight: '900'},
+
   displayCard: {
     marginHorizontal: 14,
     borderWidth: 1,
     borderRadius: 16,
-    padding: 16,
+    padding: 18,
     marginBottom: 12,
+    alignItems: 'center', // ✅ key fix: center like Tip screen
   },
   label: {fontSize: 12, fontWeight: '700'},
   amount: {marginTop: 8, fontSize: 44, fontWeight: '900'},
   hint: {marginTop: 6, fontSize: 12},
+
   keypadWrap: {flex: 1, justifyContent: 'center'},
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
+  grid: {flexDirection: 'row', flexWrap: 'wrap'},
   key: {
     borderWidth: 1,
     borderRadius: 16,
@@ -221,12 +227,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   keyText: {fontSize: 26, fontWeight: '900'},
+
   actions: {paddingBottom: 14},
   primaryBtn: {
     borderRadius: 16,
     paddingVertical: 14,
     alignItems: 'center',
-    justifyContent: 'center',
   },
   primaryText: {color: '#020617', fontWeight: '900', fontSize: 16},
 });
