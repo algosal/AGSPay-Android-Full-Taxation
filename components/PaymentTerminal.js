@@ -465,12 +465,13 @@ const PaymentTerminal = forwardRef(
 
         const selection = await readAgpaySelection();
 
+        // ✅ metadata that goes to Stripe AND to your DynamoDB record
         const meta = {
+          ...(debugMeta || {}),
           corporateRef: selection?.corporateRef || '',
           corporateName: selection?.corporateName || '',
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
-          ...(debugMeta || {}),
         };
 
         const {clientSecret, raw} = await createIntentOnBackend({
@@ -506,55 +507,134 @@ const PaymentTerminal = forwardRef(
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
-        // 🔥 BUILD PAYLOAD EXACTLY LIKE CURL
-        const payload = {
-          corporateRef: selection?.corporateRef,
-          corporateName: selection?.corporateName,
-          storeRef: selection?.storeRef,
-          storeName: selection?.storeName,
+        // -----------------------------
+        // ✅ Build EXACT VendioTransactions payload (like your curl)
+        // -----------------------------
+        const jwt = await readAgpayAuthToken();
 
-          stripe: {
-            paymentIntentId: pi?.id || null,
-            status: pi?.status || null,
-            amount: pi?.amount || amt,
-            currency: pi?.currency || currency,
-            paymentMethodId: pi?.payment_method || null,
-            chargeId: pi?.charges?.data?.[0]?.id || null,
-          },
+        // Pull charge + cardPresent info if available (live will populate; simulated often null)
+        const firstCharge =
+          Array.isArray(pi?.charges) && pi.charges.length
+            ? pi.charges[0]
+            : null;
 
-          stripeReturnedObject: JSON.stringify(raw || {}),
+        const cardPresent =
+          firstCharge?.paymentMethodDetails?.cardPresentDetails || null;
+
+        const stripeObj = {
+          paymentIntentId: pi?.id || null,
+          status: pi?.status || null,
+          amount: pi?.amount || amt,
+          currency: pi?.currency || currency || 'usd',
+          paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
+          chargeId: firstCharge?.id || null,
+          // optional (your DynamoDB may store these at top-level too; keep if you want)
+          brand: cardPresent?.brand || null,
+          last4: cardPresent?.last4 || null,
+        };
+
+        // ✅ Make sure debugMeta is NOT empty:
+        // Prefer what Checkout passes in `debugMeta`, otherwise derive from `breakdown`
+        const derivedDebugMeta = {
+          subtotalInput:
+            debugMeta?.subtotalInput ??
+            (breakdown?.subtotalCents != null
+              ? String((Number(breakdown.subtotalCents) / 100).toFixed(2))
+              : ''),
+          subtotalCents: Number(
+            debugMeta?.subtotalCents ?? breakdown?.subtotalCents ?? 0,
+          ),
+          taxRate: Number(
+            debugMeta?.taxRate ??
+              (breakdown?.subtotalCents
+                ? Number(breakdown?.taxCents || 0) /
+                  Number(breakdown.subtotalCents)
+                : 0),
+          ),
+          taxCents: Number(debugMeta?.taxCents ?? breakdown?.taxCents ?? 0),
+          serviceFeeCents: Number(
+            debugMeta?.serviceFeeCents ??
+              breakdown?.albaFeeCents ??
+              breakdown?.serviceFeeCents ??
+              0,
+          ),
+          note: debugMeta?.note ?? '',
+        };
+
+        const vendioPayload = {
+          corporateRef: selection?.corporateRef || '',
+          corporateName: selection?.corporateName || '',
+          storeRef: selection?.storeRef || '',
+          storeName: selection?.storeName || '',
+
+          stripe: stripeObj,
+
+          // you asked: "dump all stripe data there"
+          stripeReturnedObject: JSON.stringify(pi || raw || {}),
+
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
-          debugMeta: debugMeta || {},
-          descriptionSentToStripe: pi?.description || '',
+          debugMeta: derivedDebugMeta,
+
+          descriptionSentToStripe: String(debugMeta?.note || ''),
           metadataSentToStripe: meta,
           clientEpochMs: Date.now(),
         };
 
-        // 🔥 keep existing callback
-        onPaymentSuccess?.(payload);
+        // -----------------------------
+        // ✅ POST to DynamoDB endpoint
+        // -----------------------------
+        const VENDIO_TX_URL =
+          'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
 
-        // 🔥 SEND TO YOUR API (JWT FROM KEYCHAIN)
-        const jwt = await readAgpayAuthToken();
-        console.log('TX => POST VendioTransactions payload:', payload);
-
-        const resp = await fetch(
-          'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(jwt ? {Authorization: jwt} : {}),
-            },
-            body: JSON.stringify(payload),
-          },
+        console.log('TX => about to send payload:', vendioPayload);
+        console.log(
+          'TX => auth token:',
+          jwt ? `${jwt.slice(0, 10)}…` : '(missing)',
         );
 
-        const text = await resp.text();
-        console.log('TX => VendioTransactions response:', resp.status, text);
+        const resp = await fetch(VENDIO_TX_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(jwt ? {Authorization: jwt} : {}),
+          },
+          body: JSON.stringify(vendioPayload),
+        });
+
+        const respText = await resp.text();
+        console.log(
+          'TX => VendioTransactions response:',
+          resp.status,
+          respText,
+        );
 
         if (!resp.ok) {
-          throw new Error(`VendioTransactions failed: ${resp.status} ${text}`);
+          throw new Error(
+            `VendioTransactions failed: HTTP ${resp.status}. Body: ${respText}`,
+          );
         }
+
+        // keep your existing success callback (no behavior change)
+        onPaymentSuccess?.({
+          method: 'CARD',
+          paymentMethod: 'CARD',
+          amountCents: amt,
+          amountText: amountLabel || `$${(amt / 100).toFixed(2)}`,
+          currency: currency || 'usd',
+          totalCents: amt,
+          grandTotalCents: amt,
+          breakdown: breakdown || null,
+          stripe: {
+            paymentIntentId: stripeObj.paymentIntentId,
+            status: stripeObj.status,
+            amount: stripeObj.amount,
+            currency: stripeObj.currency,
+            paymentMethodId: stripeObj.paymentMethodId,
+            chargeId: stripeObj.chargeId,
+          },
+          stripeReturnedObject: vendioPayload.stripeReturnedObject,
+          createdAtText: new Date().toLocaleString(),
+        });
       } catch (e) {
         console.log('startCardPayment error:', e);
         setStatusLine(`Payment failed: ${String(e?.message || e)}`);
