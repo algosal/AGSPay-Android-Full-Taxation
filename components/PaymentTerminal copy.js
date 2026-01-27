@@ -464,13 +464,12 @@ const PaymentTerminal = forwardRef(
         setStatusLine('Creating PaymentIntent…');
 
         const selection = await readAgpaySelection();
-
         const meta = {
+          ...(debugMeta || {}),
           corporateRef: selection?.corporateRef || '',
           corporateName: selection?.corporateName || '',
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
-          ...(debugMeta || {}),
         };
 
         const {clientSecret, raw} = await createIntentOnBackend({
@@ -506,55 +505,24 @@ const PaymentTerminal = forwardRef(
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
-        // 🔥 BUILD PAYLOAD EXACTLY LIKE CURL
-        const payload = {
-          corporateRef: selection?.corporateRef,
-          corporateName: selection?.corporateName,
-          storeRef: selection?.storeRef,
-          storeName: selection?.storeName,
-
+        onPaymentSuccess?.({
+          method: 'CARD',
+          paymentMethod: 'CARD',
+          amountCents: amt,
+          amountText: amountLabel || `$${(amt / 100).toFixed(2)}`,
+          currency: currency || 'usd',
+          totalCents: amt,
+          grandTotalCents: amt,
+          breakdown: breakdown || null,
           stripe: {
             paymentIntentId: pi?.id || null,
             status: pi?.status || null,
             amount: pi?.amount || amt,
             currency: pi?.currency || currency,
-            paymentMethodId: pi?.payment_method || null,
-            chargeId: pi?.charges?.data?.[0]?.id || null,
           },
-
           stripeReturnedObject: JSON.stringify(raw || {}),
-          amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
-          debugMeta: debugMeta || {},
-          descriptionSentToStripe: pi?.description || '',
-          metadataSentToStripe: meta,
-          clientEpochMs: Date.now(),
-        };
-
-        // 🔥 keep existing callback
-        onPaymentSuccess?.(payload);
-
-        // 🔥 SEND TO YOUR API (JWT FROM KEYCHAIN)
-        const jwt = await readAgpayAuthToken();
-        console.log('TX => POST VendioTransactions payload:', payload);
-
-        const resp = await fetch(
-          'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(jwt ? {Authorization: jwt} : {}),
-            },
-            body: JSON.stringify(payload),
-          },
-        );
-
-        const text = await resp.text();
-        console.log('TX => VendioTransactions response:', resp.status, text);
-
-        if (!resp.ok) {
-          throw new Error(`VendioTransactions failed: ${resp.status} ${text}`);
-        }
+          createdAtText: new Date().toLocaleString(),
+        });
       } catch (e) {
         console.log('startCardPayment error:', e);
         setStatusLine(`Payment failed: ${String(e?.message || e)}`);
