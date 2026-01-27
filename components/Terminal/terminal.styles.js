@@ -1,4 +1,4 @@
-// components/Terminal/terminal.styles.js
+// FILE: components/Terminal/terminal.styles.js
 import {StyleSheet} from 'react-native';
 
 export const AG = {
@@ -21,26 +21,28 @@ export default StyleSheet.create({
     backgroundColor: AG.bg,
   },
 
-  // no scrolling — everything must fit
+  // Fill screen + top anchor
   content: {
     flex: 1,
-    padding: 14,
-    justifyContent: 'center',
+    padding: 16,
+    justifyContent: 'flex-start',
   },
 
+  // Make card occupy most of the vertical space
   card: {
+    flex: 1,
     backgroundColor: AG.card,
     borderWidth: 1,
     borderColor: AG.cardBorder,
-    borderRadius: 18,
-    padding: 14,
+    borderRadius: 22,
+    padding: 16,
   },
 
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 12,
   },
 
   titleRow: {
@@ -51,30 +53,29 @@ export default StyleSheet.create({
 
   titleAG: {
     color: AG.gold,
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '900',
     letterSpacing: 1,
   },
 
   titlePay: {
     color: AG.text,
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '900',
     letterSpacing: 1,
   },
 
   subtitle: {
     color: AG.muted,
-    marginTop: 4,
+    marginTop: 6,
     fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
 
-  // Top connect chip (tappable)
   connectChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: AG.border,
@@ -89,26 +90,26 @@ export default StyleSheet.create({
     color: AG.gold,
   },
 
-  // Big amount display (non-native keypad UX)
+  // Bigger visual "hero" section
   bigAmountBox: {
-    marginTop: 10,
+    marginTop: 14,
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
-    borderRadius: 18,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
   },
   bigAmount: {
     color: AG.text,
-    fontSize: 44,
+    fontSize: 52,
     fontWeight: '900',
     letterSpacing: 1,
     textAlign: 'center',
     includeFontPadding: false,
   },
   bigAmountSub: {
-    marginTop: 4,
+    marginTop: 6,
     color: AG.muted,
     fontSize: 12,
     fontWeight: '800',
@@ -116,16 +117,16 @@ export default StyleSheet.create({
   },
 
   dividerTop: {
-    marginTop: 10,
+    marginTop: 14,
     borderTopWidth: 1,
     borderTopColor: '#111827',
-    paddingTop: 10,
+    paddingTop: 12,
   },
 
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 6,
+    marginTop: 8,
   },
   rowLabel: {
     color: AG.subtext,
@@ -143,20 +144,22 @@ export default StyleSheet.create({
     fontWeight: '900',
   },
 
-  // Keypad
+  // Push keypad + buttons toward bottom of card
   keypad: {
-    marginTop: 12,
+    marginTop: 14,
+    flexGrow: 1,
+    justifyContent: 'flex-end',
   },
   keypadRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   keypadBtn: {
     flex: 1,
-    height: 78,
+    height: 82,
     marginHorizontal: 6,
-    borderRadius: 18,
+    borderRadius: 20,
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
@@ -169,7 +172,7 @@ export default StyleSheet.create({
   },
   keypadText: {
     color: AG.text,
-    fontSize: 30,
+    fontSize: 32,
     fontWeight: '900',
   },
   keypadTextGold: {
@@ -177,23 +180,22 @@ export default StyleSheet.create({
   },
 
   noteInput: {
-    marginTop: 10,
+    marginTop: 12,
     backgroundColor: AG.inputBg,
     borderWidth: 1,
     borderColor: AG.border,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     color: AG.text,
     fontSize: 16,
     fontWeight: '800',
   },
 
-  // Full-width buttons
   secondaryBtn: {
-    marginTop: 10,
-    paddingVertical: 12,
-    borderRadius: 16,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: AG.border,
     backgroundColor: AG.inputBg,
@@ -208,9 +210,9 @@ export default StyleSheet.create({
 
   primaryBtn: {
     backgroundColor: AG.gold,
-    paddingVertical: 14,
-    borderRadius: 16,
-    marginTop: 10,
+    paddingVertical: 16,
+    borderRadius: 18,
+    marginTop: 12,
     width: '100%',
   },
   primaryBtnText: {
@@ -221,9 +223,9 @@ export default StyleSheet.create({
   },
 
   dangerBtn: {
-    marginTop: 10,
-    paddingVertical: 12,
-    borderRadius: 16,
+    marginTop: 12,
+    paddingVertical: 13,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: '#334155',
     backgroundColor: '#0b1220',
@@ -237,8 +239,10 @@ export default StyleSheet.create({
   },
 
   statusText: {
+    marginTop: 10,
     color: AG.muted,
     fontSize: 12,
     fontWeight: '800',
+    textAlign: 'center',
   },
 });

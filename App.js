@@ -1,7 +1,16 @@
 // FILE: App.js
-import React, {useMemo, useRef, useState} from 'react';
-import {Alert, SafeAreaView, StatusBar, View} from 'react-native';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
+import {
+  Alert,
+  SafeAreaView,
+  StatusBar,
+  View,
+  Text,
+  ActivityIndicator,
+  TouchableOpacity,
+} from 'react-native';
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
+import * as Keychain from 'react-native-keychain';
 
 import Login from './components/Login/Login';
 import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen';
@@ -14,6 +23,7 @@ import CheckoutScreen from './components/Checkout/CheckoutScreen';
 import ReceiptScreen from './components/Receipt/ReceiptScreen';
 
 import PaymentTerminal from './components/PaymentTerminal';
+import {themes} from './components/theme/agTheme';
 
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
@@ -52,9 +62,9 @@ function centsToMoney(cents) {
  * - fee = (2.7% of base + $0.05) + extra
  * - extra linearly ramps from $0.05 at $0 total to $0.50 at $100 total
  *   => extra = $0.05 + (min(total,100)/100)*$0.45
- * - minimum enforced: at least $0.05 (already satisfied by above)
+ * - minimum enforced: at least $0.05 (hard guard)
  *
- * base = subtotal + tax + tip   (amount untouched; tax calculated; tip user-entered)
+ * base = subtotal + tax + tip
  */
 function calcServiceFeeCents(baseCents) {
   const base = Math.max(0, Number(baseCents || 0));
@@ -69,26 +79,117 @@ function calcServiceFeeCents(baseCents) {
 
   const fee = percentPart + fixedPart + extra;
 
-  // minimum 5 cents (always true, but keep hard guard)
+  // minimum 5 cents
   return Math.max(5, fee);
 }
 
-export default function App() {
-  const theme = useMemo(
-    () => ({
-      bg: '#020617',
-      card: '#050814',
-      text: '#ffffff',
-      muted: '#9ca3af',
-      border: '#1f2937',
-      gold: '#d4af37',
-      danger: '#ef4444',
-    }),
-    [],
-  );
+// ---------------------- Keychain helpers ----------------------
 
+async function readAgpayAuthToken() {
+  try {
+    const tokenCreds = await Keychain.getGenericPassword({
+      service: 'agpayAuthToken',
+    });
+    if (tokenCreds?.password && typeof tokenCreds.password === 'string') {
+      return tokenCreds.password;
+    }
+
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      const session = JSON.parse(internet.password);
+      if (session?.token) return session.token;
+    }
+
+    console.log('readAgpayAuthToken: no token found');
+    return null;
+  } catch (e) {
+    console.log('readAgpayAuthToken error:', e);
+    return null;
+  }
+}
+
+async function readAgpaySession() {
+  try {
+    const sessCreds = await Keychain.getGenericPassword({
+      service: 'agpaySession',
+    });
+    if (sessCreds?.password) {
+      return JSON.parse(sessCreds.password);
+    }
+
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      return JSON.parse(internet.password);
+    }
+
+    return null;
+  } catch (e) {
+    console.log('readAgpaySession error:', e);
+    return null;
+  }
+}
+
+async function readAgpaySelection() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpaySelection');
+    if (!creds?.password) return null;
+    return JSON.parse(creds.password);
+  } catch (e) {
+    console.log('readAgpaySelection error:', e);
+    return null;
+  }
+}
+
+// ---------------------- Transaction payload logging ----------------------
+
+function maskToken(t) {
+  if (!t || typeof t !== 'string') return null;
+  if (t.length <= 18) return '***';
+  return t.slice(0, 10) + '…' + t.slice(-6);
+}
+
+function buildTransactionPayload({session, selection, chargeData, receipt}) {
+  return {
+    ownerId: session?.ownerId || session?.userId || null,
+    email: session?.email || null,
+
+    corporateId: selection?.corporateId || null,
+    corporateRef: selection?.corporateRef || null,
+    corporateName: selection?.corporateName || null,
+    storeRef: selection?.storeRef || null,
+    storeName: selection?.storeName || null,
+    corpStoreKey: selection?.corpStoreKey || null,
+
+    currency: chargeData?.currency || 'usd',
+    subtotalCents: Number(chargeData?.subtotalCents || 0),
+    taxCents: Number(chargeData?.taxCents || 0),
+    albaFeeCents: Number(chargeData?.albaFeeCents || 0),
+    tipCents: Number(chargeData?.tipCents || 0),
+    totalCents: Number(chargeData?.totalCents || 0),
+
+    method:
+      receipt?.method || receipt?.paymentMethod || chargeData?.method || null,
+    paymentId: receipt?.paymentId || null,
+    chargeId: receipt?.chargeId || null,
+    brand: receipt?.brand || null,
+    last4: receipt?.last4 || null,
+
+    createdAt: Date.now(),
+    createdAtText: new Date().toLocaleString(),
+  };
+}
+
+function logTransactionPayload(payload, token) {
+  console.log('TX => about to send payload:', JSON.stringify(payload, null, 2));
+  console.log('TX => auth token:', maskToken(token));
+}
+
+export default function App() {
   const paymentRef = useRef(null);
   const startingCardRef = useRef(false);
+
+  // ✅ Boot gate prevents 1-second LOGIN flash
+  const [booting, setBooting] = useState(true);
 
   const [screen, setScreen] = useState('LOGIN');
   const [session, setSession] = useState(null);
@@ -102,16 +203,59 @@ export default function App() {
   });
   const [isReaderBusy, setIsReaderBusy] = useState(false);
 
-  // ✅ drive the “big status” UI on TerminalScreen
   const [terminalStatusLine, setTerminalStatusLine] = useState('');
-
-  // mount Stripe only when needed
   const [stripeEnabled, setStripeEnabled] = useState(false);
+
+  // ✅ Theme toggle (light/dark)
+  const [themeMode, setThemeMode] = useState('dark');
+  const theme = useMemo(() => themes[themeMode] || themes.dark, [themeMode]);
+
+  const toggleTheme = () => {
+    setThemeMode(m => (m === 'dark' ? 'light' : 'dark'));
+  };
 
   function go(next) {
     console.log('🧭 NAV =>', next);
     setScreen(next);
   }
+
+  // ✅ BOOT: decide initial screen before rendering app
+  useEffect(() => {
+    (async () => {
+      try {
+        console.log('BOOT => checking saved auth + selection...');
+
+        const token = await readAgpayAuthToken();
+        const sel = await readAgpaySelection();
+        const sess = await readAgpaySession();
+
+        console.log('BOOT => token exists:', !!token);
+        console.log('BOOT => selection:', sel);
+
+        // store session in state if present
+        if (sess?.token) setSession({token: sess.token});
+
+        if (token && sel?.storeRef) {
+          console.log('BOOT => store already selected, going TERMINAL');
+          setScreen('TERMINAL');
+        } else if (token && (sel?.corporateId || sel?.corporateRef)) {
+          console.log('BOOT => corporate selected, going STORE');
+          setScreen('STORE');
+        } else if (token) {
+          console.log('BOOT => token exists, going CORP');
+          setScreen('CORP');
+        } else {
+          console.log('BOOT => no token, going LOGIN');
+          setScreen('LOGIN');
+        }
+      } catch (e) {
+        console.log('BOOT => error:', e);
+        setScreen('LOGIN');
+      } finally {
+        setBooting(false);
+      }
+    })();
+  }, []);
 
   async function waitForPaymentRefReady(timeoutMs = 4000) {
     const start = Date.now();
@@ -150,9 +294,7 @@ export default function App() {
   };
 
   // ---------- AMOUNT ----------
-  // ✅ robustly accepts cents OR dollars from AmountEntryScreen
   const handleAmountDone = payload => {
-    // payload might be: {amountCents} OR {amountDollars} OR {amount}
     const amountCentsRaw = payload?.amountCents;
     const amountDollarsRaw =
       payload?.amountDollars !== undefined
@@ -162,28 +304,20 @@ export default function App() {
     let subtotalCents = 0;
 
     if (Number.isFinite(Number(amountCentsRaw)) && Number(amountCentsRaw) > 0) {
-      // treat as cents
       subtotalCents = Math.round(Number(amountCentsRaw));
     } else if (
       Number.isFinite(Number(amountDollarsRaw)) &&
       Number(amountDollarsRaw) > 0
     ) {
-      // treat as dollars
       subtotalCents = Math.round(Number(amountDollarsRaw) * 100);
     } else {
       subtotalCents = 0;
     }
 
-    // tax based on subtotal (amount untouched)
     const taxCents = Math.round(subtotalCents * TAX_RATE);
-
-    // total before tip (tip will be added on TIP screen)
     const baseBeforeTipCents = subtotalCents + taxCents;
 
-    // service fee computed on (subtotal + tax + tip) per your spec,
-    // but tip is not known yet, so we set it to 0 here and recompute after tip.
     const albaFeeCents = calcServiceFeeCents(baseBeforeTipCents);
-
     const totalCents = baseBeforeTipCents + albaFeeCents;
 
     setChargeData({
@@ -215,12 +349,8 @@ export default function App() {
     const tax = Number(prev.taxCents || 0);
     const tip = Math.max(0, Math.round(Number(tipCents || 0)));
 
-    // base = subtotal + tax + tip  (per your requirement)
     const baseCents = subtotal + tax + tip;
-
-    // recompute service fee AFTER tip is known
     const albaFeeCents = calcServiceFeeCents(baseCents);
-
     const totalCents = baseCents + albaFeeCents;
 
     setChargeData({
@@ -241,11 +371,12 @@ export default function App() {
       method: 'CASH',
       paymentMethod: 'CASH',
       createdAtText: new Date().toLocaleString(),
+      breakdown: chargeData || null,
     });
     go('RECEIPT');
   };
 
-  // ---------- CARD (run entirely via PaymentTerminal, no CardTap screen) ----------
+  // ---------- CARD ----------
   const startCardFlowNow = async () => {
     if (startingCardRef.current) return;
     startingCardRef.current = true;
@@ -263,16 +394,13 @@ export default function App() {
         return;
       }
 
-      // init once (safe if already initialized)
       await paymentRef.current.ensureInit?.();
 
-      // connect if needed (PaymentTerminal itself also guards "already connected")
       const isConnected = await paymentRef.current.isReaderConnected?.();
       if (!isConnected) {
         await paymentRef.current.connectReaderFlow?.();
       }
 
-      // start payment (will not rediscover if already connected)
       await paymentRef.current.startCardPayment?.();
     } catch (e) {
       Alert.alert('Payment failed', String(e?.message || e));
@@ -284,19 +412,58 @@ export default function App() {
 
   const handleCardConfirm = async data => {
     setChargeData(data);
-    go('TERMINAL'); // keep employee on Terminal screen
-    // important: run after navigation kicks in so Stripe can mount
+    go('TERMINAL');
     setTimeout(startCardFlowNow, 0);
   };
 
-  const handlePaymentSuccess = receiptPayload => {
-    setReceipt(receiptPayload);
-    setStripeEnabled(false);
-    setIsReaderBusy(false);
-    go('RECEIPT');
+  // ✅ Log exactly what we would send to transactions table (masked token)
+  const handlePaymentSuccess = async receiptPayload => {
+    try {
+      setReceipt(receiptPayload);
+
+      const sess = await readAgpaySession();
+      const sel = await readAgpaySelection();
+      const token = await readAgpayAuthToken();
+
+      const txPayload = buildTransactionPayload({
+        session: sess,
+        selection: sel,
+        chargeData,
+        receipt: receiptPayload,
+      });
+
+      logTransactionPayload(txPayload, token);
+
+      // TODO: POST txPayload to your Transactions API when ready
+    } catch (e) {
+      console.log('handlePaymentSuccess => logging error:', e);
+    } finally {
+      setStripeEnabled(false);
+      setIsReaderBusy(false);
+      go('RECEIPT');
+    }
   };
 
   // ---------- UI ----------
+  if (booting) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          backgroundColor: theme.bg,
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 24,
+        }}>
+        <StatusBar
+          barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
+        />
+        <ActivityIndicator size="large" />
+        <Text style={{marginTop: 12, color: theme.muted}}>Starting AGPay…</Text>
+      </SafeAreaView>
+    );
+  }
+
   const content = (() => {
     if (screen === 'LOGIN')
       return <Login theme={theme} onLoginSuccess={handleLoginSuccess} />;
@@ -305,6 +472,8 @@ export default function App() {
       return (
         <CorporateSelectScreen
           theme={theme}
+          themeMode={themeMode}
+          onToggleTheme={toggleTheme}
           onLogout={handleLogout}
           onCorporatePicked={() => go('STORE')}
         />
@@ -314,6 +483,8 @@ export default function App() {
       return (
         <StoreSelectScreen
           theme={theme}
+          themeMode={themeMode}
+          onToggleTheme={toggleTheme}
           onBack={() => go('CORP')}
           onLogout={handleLogout}
           onStorePicked={() => go('TERMINAL')}
@@ -323,6 +494,7 @@ export default function App() {
     if (screen === 'TERMINAL')
       return (
         <TerminalScreen
+          theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
           readerStatus={readerStatus}
@@ -380,6 +552,7 @@ export default function App() {
     if (screen === 'CHECKOUT')
       return (
         <CheckoutScreen
+          theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
           onCashConfirm={handleCashReceipt}
@@ -391,8 +564,9 @@ export default function App() {
     if (screen === 'RECEIPT')
       return (
         <ReceiptScreen
+          theme={theme}
           receipt={receipt}
-          onBack={() => go('CHECKOUT')} // ✅ Back goes to Checkout (change if you prefer Terminal)
+          onBack={() => go('CHECKOUT')}
           onDone={() => {
             setReceipt(null);
             setChargeData(null);
@@ -407,14 +581,40 @@ export default function App() {
     return <View />;
   })();
 
-  // Mount Stripe only when logged in + enabled + we are on Terminal.
-  // (This prevents background connect/disconnect conflicts.)
+  // ✅ Floating toggle on screens EXCEPT CORP/STORE (to avoid collision w logout)
+  const showFloatingToggle = screen !== 'CORP' && screen !== 'STORE';
+
   const shouldMountStripe =
     !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
   return (
     <SafeAreaView style={{flex: 1, backgroundColor: theme.bg}}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar
+        barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
+      />
+
+      {showFloatingToggle ? (
+        <TouchableOpacity
+          onPress={toggleTheme}
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            zIndex: 9999,
+            paddingVertical: 8,
+            paddingHorizontal: 10,
+            borderRadius: 999,
+            borderWidth: 1,
+            borderColor: theme.border,
+            backgroundColor: theme.card,
+            opacity: 0.95,
+          }}>
+          <Text style={{color: theme.text, fontWeight: '900'}}>
+            {themeMode === 'dark' ? '☀️' : '🌙'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+
       {content}
 
       {shouldMountStripe ? (

@@ -1,3 +1,4 @@
+// FILE: components/StoreSelect/StoreSelectScreen.js
 import React, {useEffect, useState} from 'react';
 import {
   View,
@@ -58,7 +59,6 @@ function buildStoreRef(store) {
 
 /**
  * Try to decide whether a store belongs to the selected corporate.
- * Supports several common shapes without needing backend changes.
  */
 function storeMatchesCorporate(store, sel) {
   if (!store || !sel) return false;
@@ -66,7 +66,6 @@ function storeMatchesCorporate(store, sel) {
   const selCorporateId = sel?.corporateId ? String(sel.corporateId) : null;
   const selCorporateRef = sel?.corporateRef ? String(sel.corporateRef) : null;
 
-  // Direct ID matches (most common)
   const candidates = [
     store?.corporateId,
     store?.corporateUuid,
@@ -79,17 +78,12 @@ function storeMatchesCorporate(store, sel) {
 
   if (selCorporateId && candidates.includes(selCorporateId)) return true;
 
-  // Direct Ref matches (if your backend keys by corporateRef)
   const refCandidates = [store?.corporateRef, store?.corporate_ref]
     .filter(v => v !== undefined && v !== null)
     .map(v => String(v));
 
   if (selCorporateRef && refCandidates.includes(selCorporateRef)) return true;
 
-  // If corpStoreKey encodes corporate info, try to match it
-  // Example patterns:
-  // - "corporateUuid#...#storeUuid#..."
-  // - "corporateRef#storeUuid"
   const corpStoreKey = store?.corpStoreKey ? String(store.corpStoreKey) : '';
   if (corpStoreKey) {
     if (selCorporateId && corpStoreKey.includes(selCorporateId)) return true;
@@ -99,7 +93,13 @@ function storeMatchesCorporate(store, sel) {
   return false;
 }
 
-export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
+export default function StoreSelectScreen({
+  onStorePicked,
+  onBack,
+  onLogout,
+  themeMode,
+  onToggleTheme,
+}) {
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState([]);
 
@@ -120,7 +120,6 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
         return;
       }
 
-      // Prefer corporateId if present, else corporateRef
       await loadStores(sel?.corporateId || sel?.corporateRef, sel);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,7 +135,6 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
         return;
       }
 
-      // Try the backend filter first using corporateId (as you already do)
       const encodedCorporateKey = encodeURIComponent(String(corporateKey));
       const url = `${STORES_URL}?corporateId=${encodedCorporateKey}`;
 
@@ -148,7 +146,7 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
       const resp = await fetch(url, {
         method: 'GET',
         headers: {
-          Authorization: token, // RAW JWT — NO Bearer
+          Authorization: token,
           'Content-Type': 'application/json',
         },
       });
@@ -172,7 +170,6 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
       const arr = Array.isArray(data) ? data : [];
       console.log('STORES → received count:', arr.length);
 
-      // ✅ Client-side filter fallback (works even if API returns all stores)
       const filtered = arr.filter(s => storeMatchesCorporate(s, sel));
       console.log(
         'STORES → filtered count:',
@@ -184,20 +181,9 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
         ')',
       );
 
-      // If filter finds nothing, keep raw list but log clearly
       if (filtered.length === 0 && arr.length > 0) {
         console.log(
           '⚠️ STORES → filter found 0 matches. Showing ALL stores so UI is not blocked.',
-        );
-        console.log(
-          '⚠️ Sample store keys:',
-          arr.slice(0, 3).map(x => ({
-            storeName: x?.storeName,
-            corporateId: x?.corporateId,
-            corporateUuid: x?.corporateUuid,
-            corporateRef: x?.corporateRef,
-            corpStoreKey: x?.corpStoreKey,
-          })),
         );
         setStores(arr);
       } else {
@@ -279,9 +265,17 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
 
         <Text style={styles.title}>Select a Store</Text>
 
-        <TouchableOpacity onPress={onLogout}>
-          <Text style={styles.logout}>⎋</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={onToggleTheme}>
+            <Text style={styles.toggleIcon}>
+              {themeMode === 'dark' ? '☀️' : '🌙'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={onLogout}>
+            <Text style={styles.logout}>⎋</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
@@ -329,6 +323,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  toggleIcon: {fontSize: 20, color: GOLD},
   title: {
     color: 'white',
     fontSize: 22,

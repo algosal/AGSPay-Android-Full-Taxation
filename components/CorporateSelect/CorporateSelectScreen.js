@@ -1,3 +1,4 @@
+// FILE: components/CorporateSelect/CorporateSelectScreen.js
 import React, {useEffect, useState} from 'react';
 import {
   View,
@@ -38,7 +39,12 @@ async function saveAgpaySelection(selectionPayload) {
   }
 }
 
-export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
+export default function CorporateSelectScreen({
+  onCorporatePicked,
+  onLogout,
+  themeMode,
+  onToggleTheme,
+}) {
   const [loading, setLoading] = useState(true);
   const [corporates, setCorporates] = useState([]);
 
@@ -180,9 +186,18 @@ export default function CorporateSelectScreen({onCorporatePicked, onLogout}) {
     <View style={styles.root}>
       <View style={styles.header}>
         <Text style={styles.title}>Select a Corporate</Text>
-        <TouchableOpacity onPress={onLogout}>
-          <Text style={styles.logout}>⎋</Text>
-        </TouchableOpacity>
+
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={onToggleTheme}>
+            <Text style={styles.toggleIcon}>
+              {themeMode === 'dark' ? '☀️' : '🌙'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={onLogout}>
+            <Text style={styles.logout}>⎋</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
@@ -219,6 +234,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  toggleIcon: {fontSize: 20, color: GOLD},
   title: {
     color: 'white',
     fontSize: 22,
@@ -267,3 +288,4 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 });
+// FILE: components/Terminal/AmountEntryScreen.jsx

@@ -1,0 +1,31 @@
+// FILE: components/theme/agTheme.js
+export const themes = {
+  dark: {
+    mode: 'dark',
+    bg: '#000000',
+    card: '#0b1220',
+    border: '#1f2937',
+    inputBg: '#020617',
+    text: '#ffffff',
+    subtext: '#d1d5db',
+    muted: '#9ca3af',
+    gold: '#facc15',
+    goldText: '#020617',
+    danger: '#ef4444',
+    shadow: '#000000',
+  },
+  light: {
+    mode: 'light',
+    bg: '#f8fafc',
+    card: '#ffffff',
+    border: '#e5e7eb',
+    inputBg: '#f1f5f9',
+    text: '#0f172a',
+    subtext: '#334155',
+    muted: '#64748b',
+    gold: '#d4af37',
+    goldText: '#111827',
+    danger: '#dc2626',
+    shadow: '#0f172a',
+  },
+};
