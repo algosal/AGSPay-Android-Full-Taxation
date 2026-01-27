@@ -558,6 +558,10 @@ const PaymentTerminal = forwardRef(
               breakdown?.serviceFeeCents ??
               0,
           ),
+
+          // ✅ ADD THIS
+          tipCents: Number(debugMeta?.tipCents ?? breakdown?.tipCents ?? 0),
+
           note: debugMeta?.note ?? '',
         };
 
@@ -567,11 +571,13 @@ const PaymentTerminal = forwardRef(
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
 
+          // ✅ ADD THESE (to match curl shape)
+          totalCents: amt,
+          tipCents: Number(derivedDebugMeta?.tipCents ?? 0),
+
           stripe: stripeObj,
 
-          // you asked: "dump all stripe data there"
           stripeReturnedObject: JSON.stringify(pi || raw || {}),
-
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
           debugMeta: derivedDebugMeta,
 
