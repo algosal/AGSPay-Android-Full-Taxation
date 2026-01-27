@@ -499,6 +499,7 @@ export default function App() {
           theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
+          // onGoToTip={amountPayload => handleAmountDone(amountPayload)}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
@@ -576,7 +577,7 @@ export default function App() {
     if (screen === 'RECEIPT')
       return (
         <ReceiptScreen
-          theme={theme}
+          theme={theme} // ✅ add this
           receipt={receipt}
           onBack={() => go('CHECKOUT')}
           onDone={() => {

@@ -14,12 +14,14 @@ import {
   TapZoneIndicator,
   DarkMode,
 } from '@stripe/stripe-terminal-react-native';
+import {TERMINAL_LOCATION_ID} from '../config/stripeTerminal.js';
 
 const CREATE_INTENT_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
 // ✅ LIVE Location ID (tml_...)
-const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
+// const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
+const LOCATION_ID = TERMINAL_LOCATION_ID;
 
 // ---------------------- helpers ----------------------
 async function requestLocationPermissionIfNeeded() {
@@ -317,7 +319,7 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
-        if (!LIVE_LOCATION_ID || !String(LIVE_LOCATION_ID).startsWith('tml_')) {
+        if (!LOCATION_ID || !String(LOCATION_ID).startsWith('tml_')) {
           Alert.alert(
             'Location ID missing',
             'LIVE_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
@@ -333,7 +335,7 @@ const PaymentTerminal = forwardRef(
 
         const {error: discErr} = await discoverReaders({
           discoveryMethod: 'tapToPay',
-          simulated: false,
+          simulated: true,
         });
 
         if (discErr) {
@@ -356,19 +358,26 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
+        // if (chosen?.simulated) {
+        //   setStatusLine('Only simulated reader found');
+        //   Alert.alert(
+        //     'Reader not available',
+        //     'Only a simulated reader was found. Confirm Tap to Pay eligibility and Stripe config.',
+        //   );
+        //   return false;
+        // }
+
+        // ✅ Allow simulated reader in sandbox
         if (chosen?.simulated) {
-          setStatusLine('Only simulated reader found');
-          Alert.alert(
-            'Reader not available',
-            'Only a simulated reader was found. Confirm Tap to Pay eligibility and Stripe config.',
-          );
-          return false;
+          console.log('🧪 Using simulated Tap to Pay reader');
         }
 
         setStatusLine('Connecting Tap to Pay…');
 
+        console.log('📍 Stripe Terminal locationId in use:', LOCATION_ID);
+
         const {error: connErr} = await connectReader(
-          {reader: chosen, locationId: LIVE_LOCATION_ID},
+          {reader: chosen, locationId: LOCATION_ID},
           'tapToPay',
         );
 
