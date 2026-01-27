@@ -38,14 +38,12 @@ function nOr0(x) {
 function resolveCents(receipt, key) {
   const r = receipt || {};
   const b = r.breakdown || {};
-  // Use nullish coalescing so 0 is respected (0 is a valid value)
   return nOr0(r[key] ?? b[key]);
 }
 
 function buildReceiptHtml(receipt) {
   const r = receipt || {};
 
-  // ✅ canonical total key first
   const totalCents =
     Number(r.totalCents) ||
     Number(r.grandTotalCents) ||
@@ -55,7 +53,6 @@ function buildReceiptHtml(receipt) {
   const totalText =
     r.totalLabel || r.amountText || money(totalCents) || '(missing)';
 
-  // ✅ line items can come from receipt.* OR receipt.breakdown.*
   const subtotalCents = resolveCents(r, 'subtotalCents');
   const taxCents = resolveCents(r, 'taxCents');
   const albaFeeCents = resolveCents(r, 'albaFeeCents');
@@ -65,7 +62,6 @@ function buildReceiptHtml(receipt) {
   const corp = r.corporateName ? clipText(r.corporateName, 32) : '';
   const store = r.storeName ? clipText(r.storeName, 32) : '';
 
-  // ✅ accept method from either key
   const method = r.method
     ? String(r.method)
     : r.paymentMethod
@@ -252,10 +248,32 @@ async function readLastReceipt() {
   }
 }
 
-export default function ReceiptScreen({theme, receipt, onDone, onBack}) {
+/**
+ * ✅ IMPORTANT (Android):
+ * setInternetCredentials() throws if username OR password is empty.
+ * We clear by storing a single space, and readers must trim().
+ *
+ * This ONLY touches service: 'agpayComment' (NOT 'agpaySelection').
+ */
+async function clearAgpayCommentFromKeychain() {
+  try {
+    await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
+    return true;
+  } catch (e) {
+    console.log('Receipt => clearAgpayCommentFromKeychain error:', e);
+    return false;
+  }
+}
+
+export default function ReceiptScreen({
+  theme,
+  receipt,
+  onDone,
+  onBack,
+  onResetTxn,
+}) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
 
-  // ✅ CHANGED: theme palette only
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
     const card = theme?.card ?? '#050814';
@@ -293,6 +311,9 @@ export default function ReceiptScreen({theme, receipt, onDone, onBack}) {
       }
       const html = buildReceiptHtml(localReceipt);
       await RNPrint.print({html});
+
+      // ✅ NEW: clear comment after successful print too
+      await clearAgpayCommentFromKeychain();
     } catch (e) {
       console.log('PRINT error:', e);
       Alert.alert('Print failed', String(e?.message || e));
@@ -300,10 +321,15 @@ export default function ReceiptScreen({theme, receipt, onDone, onBack}) {
   }, [localReceipt]);
 
   const handleBack = useCallback(() => {
-    // ✅ fail-safe: if onBack isn’t wired, fall back to onDone
     if (typeof onBack === 'function') return onBack();
     if (typeof onDone === 'function') return onDone();
   }, [onBack, onDone]);
+
+  const handleDone = useCallback(async () => {
+    await clearAgpayCommentFromKeychain();
+    onResetTxn?.();
+    onDone?.();
+  }, [onDone, onResetTxn]);
 
   return (
     <View style={[styles.root, {backgroundColor: t.bg}]}>
@@ -338,7 +364,7 @@ export default function ReceiptScreen({theme, receipt, onDone, onBack}) {
         </Pressable>
 
         <Pressable
-          onPress={onDone}
+          onPress={handleDone}
           {...androidRipple('rgba(0,0,0,0.10)')}
           style={({pressed}) => [
             styles.doneBtn,

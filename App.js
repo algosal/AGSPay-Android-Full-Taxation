@@ -141,6 +141,23 @@ async function readAgpaySelection() {
   }
 }
 
+/**
+ * ✅ IMPORTANT (Android):
+ * setInternetCredentials() throws if username OR password is empty.
+ * So we clear by storing a single space, and reading code should trim().
+ *
+ * This ONLY touches 'agpayComment' (NOT selection/auth).
+ */
+async function clearAgpayComment() {
+  try {
+    await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
+    return true;
+  } catch (e) {
+    console.log('clearAgpayComment error:', e);
+    return false;
+  }
+}
+
 // ---------------------- Transaction payload logging ----------------------
 
 function maskToken(t) {
@@ -232,6 +249,12 @@ export default function App() {
 
         console.log('BOOT => token exists:', !!token);
         console.log('BOOT => selection:', sel);
+
+        // ✅ Autologin safety: clear comment on app start if token exists
+        // (prevents stale comment if vendor force-closed app mid-transaction)
+        if (token) {
+          await clearAgpayComment();
+        }
 
         // store session in state if present
         if (sess?.token) setSession({token: sess.token});
@@ -456,9 +479,6 @@ export default function App() {
           alignItems: 'center',
           padding: 24,
         }}>
-        {/* <StatusBar
-          barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
-        /> */}
         <StatusBar translucent backgroundColor="transparent" />
         <ActivityIndicator size="large" />
         <Text style={{marginTop: 12, color: theme.muted}}>Starting AGPay…</Text>
@@ -499,7 +519,6 @@ export default function App() {
           theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
-          // onGoToTip={amountPayload => handleAmountDone(amountPayload)}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
@@ -533,14 +552,15 @@ export default function App() {
           }}
         />
       );
+
     if (screen === 'FIXED_TIP')
       return (
         <FixedTipScreen
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('AMOUNT')}
-          onOther={() => go('TIP')} // go to your existing custom keypad tip screen
-          onDone={handleTipDone} // skip keypad and go straight to checkout totals
+          onOther={() => go('TIP')}
+          onDone={handleTipDone}
         />
       );
 
@@ -577,15 +597,18 @@ export default function App() {
     if (screen === 'RECEIPT')
       return (
         <ReceiptScreen
-          theme={theme} // ✅ add this
+          theme={theme}
           receipt={receipt}
           onBack={() => go('CHECKOUT')}
-          onDone={() => {
+          onResetTxn={() => {
+            // ✅ clears in-memory txn state (ReceiptScreen already clears Keychain comment)
             setReceipt(null);
             setChargeData(null);
             setStripeEnabled(false);
             setIsReaderBusy(false);
             setTerminalStatusLine('');
+          }}
+          onDone={() => {
             go('TERMINAL');
           }}
         />
@@ -602,12 +625,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
-      {/* <StatusBar
-        barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
-      /> */}
-      {/* <StatusBar hidden={true} /> */}
       <StatusBar translucent backgroundColor="transparent" />
-      {/* <StatusBar barStyle="light-content" /> */}
 
       {showFloatingToggle ? (
         <TouchableOpacity

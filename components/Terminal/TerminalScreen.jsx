@@ -1,7 +1,7 @@
 // FILE: components/Terminal/TerminalScreen.jsx
 
-import React, {useEffect, useMemo, useState} from 'react';
-import {View, Text, Alert, Pressable} from 'react-native';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
+import {View, Text, Alert, Pressable, TextInput} from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import terminalStyles from './terminal.styles';
 
@@ -13,6 +13,42 @@ async function readAgpaySelection() {
   } catch (e) {
     console.log('readAgpaySelection error:', e);
     return null;
+  }
+}
+
+async function readAgpayComment() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpayComment');
+    if (!creds?.password) return '';
+    return String(creds.password || '');
+  } catch (e) {
+    console.log('readAgpayComment error:', e);
+    return '';
+  }
+}
+
+async function writeAgpayComment(text) {
+  try {
+    await Keychain.setInternetCredentials(
+      'agpayComment',
+      'comment',
+      String(text || ''),
+    );
+    return true;
+  } catch (e) {
+    console.log('writeAgpayComment error:', e);
+    return false;
+  }
+}
+
+async function clearAgpayComment() {
+  try {
+    // safest: set to empty (avoids reset errors on some Android builds)
+    await Keychain.setInternetCredentials('agpayComment', 'comment', '');
+    return true;
+  } catch (e) {
+    console.log('clearAgpayComment error:', e);
+    return false;
   }
 }
 
@@ -29,20 +65,25 @@ export default function TerminalScreen({
   isReaderBusy,
   chargeData,
 
-  // ✅ OPTIONAL: if you wire this from App.js (see note below)
+  // ✅ App.js must pass this and bump it after CASH success too
+  commentResetNonce,
+
+  // ✅ OPTIONAL: if you wire this from App.js
   terminalStatusLine,
 
-  // ✅ ADDED: theme comes from App.js (no logic change)
+  // ✅ theme comes from App.js
   theme,
 }) {
   const s = terminalStyles;
   const [sel, setSel] = useState(null);
+  const [comment, setComment] = useState('');
 
-  /**
-   * ✅ ADDED: theme palette (colors only)
-   * Why: terminal.styles likely hardcodes colors. This layer overrides ONLY colors
-   * while keeping your spacing/layout/typography intact.
-   */
+  // Track last-seen "success id" so we clear only once per completed transaction
+  const lastClearedSuccessIdRef = useRef(null);
+
+  // ✅ Prevent stale Keychain read from re-populating after a reset
+  const ignoreHydrationRef = useRef(false);
+
   const t = useMemo(() => {
     return {
       bg: theme?.bg ?? '#020617',
@@ -58,11 +99,83 @@ export default function TerminalScreen({
   }, [theme]);
 
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
       const selection = await readAgpaySelection();
-      setSel(selection || null);
+      if (mounted) setSel(selection || null);
+
+      const saved = await readAgpayComment();
+
+      // ✅ If a reset was requested, DO NOT hydrate the old comment back in
+      if (!mounted) return;
+      if (ignoreHydrationRef.current) return;
+
+      setComment(saved || '');
     })();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
+
+  // ✅ HARD RESET: when App increments nonce, clear immediately
+  // This is what fixes CASH flow where Payment.js is never hit.
+  useEffect(() => {
+    if (commentResetNonce === undefined || commentResetNonce === null) return;
+
+    (async () => {
+      try {
+        // ✅ block any in-flight hydration from overwriting the clear
+        ignoreHydrationRef.current = true;
+
+        setComment('');
+        await clearAgpayComment();
+
+        // also clear the "auto-clear guard" so next success can clear again if needed
+        lastClearedSuccessIdRef.current = null;
+
+        // allow future loads (but this instance is already mounted)
+        // keep it true for the rest of this mount; safest to avoid re-hydration surprises
+      } catch (e) {
+        console.log('commentResetNonce clear error:', e);
+      }
+    })();
+  }, [commentResetNonce]);
+
+  // ✅ Auto-clear comment after a successful transaction is detected (CARD flow / any flow that marks success)
+  useEffect(() => {
+    const status = String(chargeData?.status || '').toLowerCase();
+    const isSuccess =
+      status === 'succeeded' ||
+      status === 'success' ||
+      status === 'paid' ||
+      status === 'completed' ||
+      chargeData?.success === true;
+
+    const successId =
+      chargeData?.receiptId ||
+      chargeData?.transactionId ||
+      chargeData?.paymentIntentId ||
+      chargeData?.chargeId ||
+      chargeData?.clientEpochMs ||
+      chargeData?.createdAt ||
+      chargeData?.paidAt ||
+      null;
+
+    if (!isSuccess || !successId) return;
+
+    if (lastClearedSuccessIdRef.current === successId) return;
+    lastClearedSuccessIdRef.current = successId;
+
+    (async () => {
+      // also block hydration surprises after a success-clear
+      ignoreHydrationRef.current = true;
+
+      await clearAgpayComment();
+      setComment('');
+    })();
+  }, [chargeData]);
 
   const connected = !!readerStatus?.connected;
 
@@ -80,14 +193,11 @@ export default function TerminalScreen({
   const totalLabel =
     chargeData?.totalLabel || (totalCents ? centsToMoney(totalCents) : '$0.00');
 
-  // ✅ what to show as the “big status”
   const bigStatus = terminalStatusLine || (isReaderBusy ? 'Working…' : '');
 
   return (
-    // ✅ CHANGED: apply themed bg without touching terminal.styles layout
     <View style={[s.screen, {backgroundColor: t.bg}]} pointerEvents="auto">
       <View style={s.content} pointerEvents="auto">
-        {/* ✅ CHANGED: apply themed card/bg/border */}
         <View
           style={[
             s.card,
@@ -98,21 +208,19 @@ export default function TerminalScreen({
           ]}
           pointerEvents="auto">
           <View style={s.headerRow} pointerEvents="auto">
-            {/* Back */}
             <Pressable
               onPress={() => onBackToStoreSelect?.()}
               hitSlop={12}
               style={[
                 s.connectChip,
                 {
-                  backgroundColor: t.inputBg, // ✅ theme-based chip bg
-                  borderColor: t.border, // ✅ theme-based border
+                  backgroundColor: t.inputBg,
+                  borderColor: t.border,
                 },
               ]}>
               <Text style={[s.connectChipText, {color: t.text}]}>Back</Text>
             </Pressable>
 
-            {/* Title */}
             <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
               <View style={s.titleRow}>
                 <Text style={[s.titleAG, {color: t.text}]}>AG</Text>
@@ -121,7 +229,6 @@ export default function TerminalScreen({
               <Text style={[s.subtitle, {color: t.muted}]}>{subtitle}</Text>
             </View>
 
-            {/* Connect / Connected */}
             <Pressable
               onPress={async () => {
                 if (isReaderBusy) return;
@@ -136,13 +243,12 @@ export default function TerminalScreen({
               style={[
                 s.connectChip,
                 {
-                  backgroundColor: t.inputBg, // ✅ theme-based chip bg
-                  borderColor: t.border, // ✅ theme-based border
+                  backgroundColor: t.inputBg,
+                  borderColor: t.border,
                 },
               ]}>
               <Text style={[s.connectChipText, {color: t.text}]}>
                 {connected ? (
-                  // ✅ CHANGED: gold color from theme
                   <Text style={[s.connectChipTextGold, {color: t.gold}]}>
                     CONNECTED
                   </Text>
@@ -153,14 +259,12 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
-          {/* Divider + status rows */}
           <View style={s.dividerTop} pointerEvents="none">
             <View style={s.row}>
               <Text style={[s.rowLabel, {color: t.muted}]}>Reader</Text>
               <Text style={[s.rowValue, {color: t.text}]}>{statusLabel}</Text>
             </View>
 
-            {/* ✅ Big indicator */}
             {bigStatus ? (
               <Text
                 style={[
@@ -169,7 +273,7 @@ export default function TerminalScreen({
                     marginTop: 10,
                     fontSize: 18,
                     fontWeight: '900',
-                    color: t.text, // ✅ theme-based
+                    color: t.text,
                   },
                 ]}>
                 {bigStatus}
@@ -177,15 +281,17 @@ export default function TerminalScreen({
             ) : null}
           </View>
 
-          {/* Amount box */}
           <Pressable
-            onPress={() => onGoToTip?.()}
+            onPress={async () => {
+              await writeAgpayComment(comment);
+              onGoToTip?.();
+            }}
             hitSlop={16}
             style={[
               s.bigAmountBox,
               {
-                backgroundColor: t.inputBg, // ✅ theme-based
-                borderColor: t.border, // ✅ theme-based
+                backgroundColor: t.inputBg,
+                borderColor: t.border,
               },
             ]}>
             <Text style={[s.bigAmount, {color: t.text}]}>{totalLabel}</Text>
@@ -193,6 +299,36 @@ export default function TerminalScreen({
               Tap amount to enter (then Tip → Payment Method → Receipt)
             </Text>
           </Pressable>
+
+          <View
+            style={{
+              marginTop: 12,
+              backgroundColor: t.inputBg,
+              borderColor: t.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+            }}>
+            <Text style={{color: t.muted, marginBottom: 6, fontSize: 12}}>
+              Comment / Description (sent to Stripe)
+            </Text>
+            <TextInput
+              value={comment}
+              onChangeText={txt => setComment(txt)}
+              placeholder="e.g., table 4, vendor note, special request…"
+              placeholderTextColor={t.muted}
+              style={{
+                color: t.text,
+                fontSize: 14,
+                padding: 0,
+                margin: 0,
+              }}
+              autoCapitalize="sentences"
+              autoCorrect
+              returnKeyType="done"
+            />
+          </View>
 
           <Text
             style={[s.statusText, {marginTop: 10, color: t.muted}]}

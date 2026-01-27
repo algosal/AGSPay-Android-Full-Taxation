@@ -19,8 +19,6 @@ import {TERMINAL_LOCATION_ID} from '../config/stripeTerminal.js';
 const CREATE_INTENT_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
-// ✅ LIVE Location ID (tml_...)
-// const LIVE_LOCATION_ID = 'tml_GUcKvwB8ozD1jO';
 const LOCATION_ID = TERMINAL_LOCATION_ID;
 
 // ---------------------- helpers ----------------------
@@ -55,18 +53,68 @@ async function readAgpayAuthToken() {
   }
 }
 
+// ✅ read the comment saved from TerminalScreen (agpayComment)
+async function readAgpayComment() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpayComment');
+    if (!creds?.password) return '';
+    return String(creds.password || '');
+  } catch (e) {
+    console.log('readAgpayComment error:', e);
+    return '';
+  }
+}
+
+// ✅ clear comment after transaction completes
+async function clearAgpayComment() {
+  try {
+    await Keychain.setInternetCredentials('agpayComment', 'comment', '');
+    return true;
+  } catch (e) {
+    console.log('clearAgpayComment error:', e);
+    return false;
+  }
+}
+
+// ✅ Stripe metadata values should be strings.
+// Your backend also sanitizes, but we do best-effort here too.
+function toStripeMetadata(obj) {
+  const out = {};
+  try {
+    const src = obj && typeof obj === 'object' ? obj : {};
+    for (const [k, v] of Object.entries(src)) {
+      if (v === undefined || v === null) continue;
+      const key = String(k).trim();
+      if (!key) continue;
+      const val = String(v).trim();
+      out[key] = val;
+    }
+  } catch (e) {
+    console.log('toStripeMetadata error:', e);
+  }
+  return out;
+}
+
 /**
  * Frontend-only fix:
  * - Lambda returns: { statusCode, body: "{\"client_secret\":\"...\"}" }
  * - We parse deterministically and fail loudly if parsing is the issue.
  */
-async function createIntentOnBackend({amountCents, currency, metadata}) {
+async function createIntentOnBackend({
+  amountCents,
+  currency,
+  metadata,
+  description,
+}) {
   const jwt = await readAgpayAuthToken();
 
+  // ✅ IMPORTANT: send EXACT keys your lambda expects: amount, currency, metadata, description
   const payload = {
     amount: Number(amountCents || 0),
     currency: String(currency || 'usd'),
     metadata: metadata || {},
+    // only include if non-empty
+    ...(description ? {description: String(description)} : {}),
   };
 
   console.log('💳 create-intent → POST:', CREATE_INTENT_URL, payload);
@@ -77,7 +125,7 @@ async function createIntentOnBackend({amountCents, currency, metadata}) {
       'Content-Type': 'application/json',
       ...(jwt ? {Authorization: jwt} : {}),
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload), // ✅ NOT double-wrapped
   });
 
   const text = await resp.text();
@@ -184,13 +232,11 @@ const PaymentTerminal = forwardRef(
     const [terminalReady, setTerminalReady] = useState(false);
     const [statusLine, setStatusLine] = useState('Not initialized');
 
-    // Always-current refs to avoid stale React state timing bugs
     const latestReadersRef = useRef([]);
     const tapToPaySupportedRef = useRef(null);
     const connectedReaderRef = useRef(null);
     const connectingRef = useRef(false);
 
-    // publish statusLine to parent (optional)
     useEffect(() => {
       onTerminalStatusLine?.(statusLine);
     }, [onTerminalStatusLine, statusLine]);
@@ -358,22 +404,11 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
-        // if (chosen?.simulated) {
-        //   setStatusLine('Only simulated reader found');
-        //   Alert.alert(
-        //     'Reader not available',
-        //     'Only a simulated reader was found. Confirm Tap to Pay eligibility and Stripe config.',
-        //   );
-        //   return false;
-        // }
-
-        // ✅ Allow simulated reader in sandbox
         if (chosen?.simulated) {
           console.log('🧪 Using simulated Tap to Pay reader');
         }
 
         setStatusLine('Connecting Tap to Pay…');
-
         console.log('📍 Stripe Terminal locationId in use:', LOCATION_ID);
 
         const {error: connErr} = await connectReader(
@@ -465,19 +500,30 @@ const PaymentTerminal = forwardRef(
 
         const selection = await readAgpaySelection();
 
-        // ✅ metadata that goes to Stripe AND to your DynamoDB record
-        const meta = {
-          ...(debugMeta || {}),
+        // ✅ Read comment saved from TerminalScreen
+        const uiCommentRaw = await readAgpayComment();
+        const uiComment = String(uiCommentRaw || '').trim();
+
+        // ✅ Send comment to Stripe:
+        // - description (Stripe PaymentIntent.description)
+        // - metadata.comment (easy visibility)
+        const baseMeta = {
           corporateRef: selection?.corporateRef || '',
           corporateName: selection?.corporateName || '',
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
+          ...(uiComment ? {comment: uiComment} : {}),
+          // keep your other fields too (stringified)
+          ...(debugMeta || {}),
         };
+
+        const meta = toStripeMetadata(baseMeta);
 
         const {clientSecret, raw} = await createIntentOnBackend({
           amountCents: amt,
           currency,
           metadata: meta,
+          description: uiComment || '',
         });
 
         setStatusLine('Retrieving intent…');
@@ -507,12 +553,8 @@ const PaymentTerminal = forwardRef(
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
-        // -----------------------------
-        // ✅ Build EXACT VendioTransactions payload (like your curl)
-        // -----------------------------
         const jwt = await readAgpayAuthToken();
 
-        // Pull charge + cardPresent info if available (live will populate; simulated often null)
         const firstCharge =
           Array.isArray(pi?.charges) && pi.charges.length
             ? pi.charges[0]
@@ -528,13 +570,10 @@ const PaymentTerminal = forwardRef(
           currency: pi?.currency || currency || 'usd',
           paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
           chargeId: firstCharge?.id || null,
-          // optional (your DynamoDB may store these at top-level too; keep if you want)
           brand: cardPresent?.brand || null,
           last4: cardPresent?.last4 || null,
         };
 
-        // ✅ Make sure debugMeta is NOT empty:
-        // Prefer what Checkout passes in `debugMeta`, otherwise derive from `breakdown`
         const derivedDebugMeta = {
           subtotalInput:
             debugMeta?.subtotalInput ??
@@ -558,11 +597,8 @@ const PaymentTerminal = forwardRef(
               breakdown?.serviceFeeCents ??
               0,
           ),
-
-          // ✅ ADD THIS
           tipCents: Number(debugMeta?.tipCents ?? breakdown?.tipCents ?? 0),
-
-          note: debugMeta?.note ?? '',
+          note: uiComment || debugMeta?.note || '',
         };
 
         const vendioPayload = {
@@ -571,24 +607,19 @@ const PaymentTerminal = forwardRef(
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
 
-          // ✅ ADD THESE (to match curl shape)
           totalCents: amt,
           tipCents: Number(derivedDebugMeta?.tipCents ?? 0),
 
           stripe: stripeObj,
-
           stripeReturnedObject: JSON.stringify(pi || raw || {}),
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
           debugMeta: derivedDebugMeta,
 
-          descriptionSentToStripe: String(debugMeta?.note || ''),
+          descriptionSentToStripe: uiComment || '',
           metadataSentToStripe: meta,
           clientEpochMs: Date.now(),
         };
 
-        // -----------------------------
-        // ✅ POST to DynamoDB endpoint
-        // -----------------------------
         const VENDIO_TX_URL =
           'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
 
@@ -620,7 +651,9 @@ const PaymentTerminal = forwardRef(
           );
         }
 
-        // keep your existing success callback (no behavior change)
+        // ✅ Clear comment for the next transaction
+        await clearAgpayComment();
+
         onPaymentSuccess?.({
           method: 'CARD',
           paymentMethod: 'CARD',
