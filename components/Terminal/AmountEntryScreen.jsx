@@ -9,6 +9,7 @@ import {
   SafeAreaView,
   Dimensions,
   Alert,
+  Platform,
 } from 'react-native';
 
 const GOLD = '#d4af37';
@@ -52,7 +53,17 @@ export default function AmountEntryScreen({
 
   const usableW = screenW - pad * 2;
   const btnW = Math.floor((usableW - gap * (cols - 1)) / cols);
-  const btnH = Math.min(btnW, Math.floor((screenH * 0.52) / 4) - gap);
+
+  // ✅ clamp btnH so StatusBar hidden doesn't inflate layout
+  const btnHRaw = Math.min(btnW, Math.floor((screenH * 0.52) / 4) - gap);
+  const btnH = Math.min(btnHRaw, 92);
+
+  // ✅ “real button” press effect (fast + POS-like)
+  const pressFX = pressed => ({
+    opacity: pressed ? 0.88 : 1,
+    transform: [{scale: pressed ? 0.985 : 1}],
+    ...(Platform.OS === 'android' ? {elevation: pressed ? 1 : 4} : null),
+  });
 
   function pushDigit(d) {
     setDigits(prev => {
@@ -118,7 +129,7 @@ export default function AmountEntryScreen({
         <View style={{width: 60}} />
       </View>
 
-      {/* Centered Amount Display (matches Tip screen layout) */}
+      {/* Centered Amount Display */}
       <View
         style={[
           styles.displayCard,
@@ -150,6 +161,7 @@ export default function AmountEntryScreen({
               <Pressable
                 key={`${label}-${idx}`}
                 onPress={fn}
+                android_ripple={{color: 'rgba(250,204,21,0.16)'}}
                 style={({pressed}) => [
                   styles.key,
                   {
@@ -159,8 +171,12 @@ export default function AmountEntryScreen({
                     marginRight: isLastCol ? 0 : gap,
                     backgroundColor: variant === 'alt' ? '#0b1224' : t.card,
                     borderColor: t.border,
-                    opacity: pressed ? 0.85 : 1,
+                    // iOS shadow (subtle) + Android elevation already handled in pressFX
+                    shadowOpacity: 0.18,
+                    shadowRadius: 6,
+                    shadowOffset: {width: 0, height: 3},
                   },
+                  pressFX(pressed),
                 ]}>
                 <Text
                   style={[
@@ -182,9 +198,17 @@ export default function AmountEntryScreen({
       <View style={[styles.actions, {paddingHorizontal: pad}]}>
         <Pressable
           onPress={handleDone}
+          android_ripple={{color: 'rgba(0,0,0,0.10)'}}
           style={({pressed}) => [
             styles.primaryBtn,
-            {backgroundColor: t.gold, opacity: pressed ? 0.9 : 1},
+            {backgroundColor: t.gold},
+            {
+              opacity: pressed ? 0.92 : 1,
+              transform: [{scale: pressed ? 0.99 : 1}],
+              ...(Platform.OS === 'android'
+                ? {elevation: pressed ? 1 : 3}
+                : null),
+            },
           ]}>
           <Text style={styles.primaryText}>Continue</Text>
         </Pressable>
@@ -212,7 +236,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 18,
     marginBottom: 12,
-    alignItems: 'center', // ✅ key fix: center like Tip screen
+    alignItems: 'center',
   },
   label: {fontSize: 12, fontWeight: '700'},
   amount: {marginTop: 8, fontSize: 44, fontWeight: '900'},
@@ -225,6 +249,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    // default elevation for “button” feel (Android)
+    elevation: 4,
   },
   keyText: {fontSize: 26, fontWeight: '900'},
 

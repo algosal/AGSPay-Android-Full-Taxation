@@ -21,22 +21,13 @@ function formatMoneyFromDigits(digits) {
   };
 }
 
-export default function TipScreen({
-  chargeData,
-  onBack,
-  onDone,
-  theme, // ✅ CHANGED: accept theme prop from App.js
-}) {
+export default function TipScreen({chargeData, onDone, theme}) {
   // tip digits represent cents
   const [digits, setDigits] = useState('0');
 
   const money = useMemo(() => formatMoneyFromDigits(digits), [digits]);
 
-  /**
-   * ✅ CHANGED: Theme palette (same idea as AmountEntryScreen)
-   * - This is the ONLY logic needed to make light/dark repaint
-   * - Keeps fallbacks so screen still renders if theme is missing
-   */
+  // ✅ Theme palette (same idea as AmountEntryScreen)
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
     const card = theme?.card ?? '#050814';
@@ -46,8 +37,7 @@ export default function TipScreen({
     const border = theme?.border ?? '#1f2937';
     const gold = theme?.gold ?? GOLD;
 
-    // ✅ CHANGED: alt key background used to be '#111827' (always dark)
-    // use inputBg (or card) so it looks correct in both themes
+    // For alt keys + chips (theme-friendly)
     const altCard = theme?.inputBg ?? '#111827';
 
     return {bg, card, inputBg, text, muted, border, gold, altCard};
@@ -104,7 +94,7 @@ export default function TipScreen({
     ['⌫', backspace, 'alt'],
   ];
 
-  // ✅ Deterministic keypad sizing (fixes “off” layout on Android / Fabric)
+  // ✅ Deterministic keypad sizing
   const {width: screenW, height: screenH} = Dimensions.get('window');
   const pad = 16;
   const gap = 10;
@@ -116,31 +106,13 @@ export default function TipScreen({
 
   return (
     <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]}>
-      {/* Header */}
+      {/* Header (NO BACK) */}
       <View style={styles.header}>
-        <Pressable
-          onPress={onBack}
-          hitSlop={12}
-          style={[
-            styles.backBtn,
-            {
-              borderColor: t.border, // ✅ CHANGED
-              backgroundColor: t.altCard, // ✅ CHANGED (was hardcoded)
-            },
-          ]}>
-          <Text style={[styles.backText, {color: t.text}]}>
-            {/* ✅ CHANGED: was hardcoded white */}
-            Back
-          </Text>
-        </Pressable>
+        <View style={{width: 64}} />
 
         <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
-          <Text style={[styles.title, {color: t.text}]}>
-            {/* ✅ CHANGED */}
-            Add Tip
-          </Text>
+          <Text style={[styles.title, {color: t.text}]}>Add Tip</Text>
           <Text style={[styles.sub, {color: t.muted}]} numberOfLines={1}>
-            {/* ✅ CHANGED */}
             {subtitle}
           </Text>
         </View>
@@ -148,33 +120,27 @@ export default function TipScreen({
         <View style={{width: 64}} />
       </View>
 
+      {/* Amount Box */}
       <View
         style={[
           styles.amountBox,
-          {
-            borderColor: t.border, // ✅ CHANGED
-            backgroundColor: t.card, // ✅ CHANGED
-          },
+          {borderColor: t.border, backgroundColor: t.card},
         ]}>
-        <Text style={[styles.amountLabel, {color: t.muted}]}>
-          {/* ✅ CHANGED */}
-          Tip
-        </Text>
+        <Text style={[styles.amountLabel, {color: t.muted}]}>Tip</Text>
 
         <Text
           style={[styles.amountText, {color: t.text}]}
           numberOfLines={1}
           adjustsFontSizeToFit>
-          {/* ✅ CHANGED */}
           {money.label}
         </Text>
 
         <Text style={[styles.amountHint, {color: t.muted}]}>
-          {/* ✅ CHANGED */}
           Tap numbers to set tip
         </Text>
       </View>
 
+      {/* Keypad */}
       <View style={[styles.keypadWrap, {paddingHorizontal: pad}]}>
         <View style={[styles.grid, {gap}]}>
           {keys.map(([label, fn, variant], idx) => (
@@ -187,16 +153,14 @@ export default function TipScreen({
                   width: btnW,
                   height: btnH,
                   opacity: pressed ? 0.85 : 1,
-                  borderColor: t.border, // ✅ CHANGED (was hardcoded)
-                  backgroundColor: variant === 'alt' ? t.altCard : t.inputBg, // ✅ CHANGED
+                  borderColor: t.border,
+                  backgroundColor: variant === 'alt' ? t.altCard : t.inputBg,
                 },
               ]}>
               <Text
                 style={[
                   styles.keyText,
-                  {
-                    color: variant === 'alt' ? t.gold : t.text, // ✅ CHANGED
-                  },
+                  {color: variant === 'alt' ? t.gold : t.text},
                 ]}>
                 {label}
               </Text>
@@ -205,15 +169,13 @@ export default function TipScreen({
         </View>
       </View>
 
+      {/* Continue */}
       <View style={[styles.bottomRow, {paddingHorizontal: pad}]}>
         <Pressable
           onPress={proceed}
           style={({pressed}) => [
             styles.continueBtn,
-            {
-              opacity: pressed ? 0.9 : 1,
-              backgroundColor: t.gold, // ✅ CHANGED (supports theme gold)
-            },
+            {opacity: pressed ? 0.9 : 1, backgroundColor: t.gold},
           ]}>
           <Text style={styles.continueText}>Continue</Text>
         </Pressable>
@@ -223,8 +185,6 @@ export default function TipScreen({
 }
 
 const styles = StyleSheet.create({
-  // ✅ CHANGED: removed hardcoded backgroundColor here
-  // Why: root background must come from theme so the toggle repaints
   root: {flex: 1},
 
   header: {
@@ -235,26 +195,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  // ✅ CHANGED: removed hardcoded borderColor/backgroundColor here
-  // Why: those must come from theme (applied inline in render)
-  backBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-
-  // ✅ CHANGED: removed hardcoded color '#fff' here
-  // Why: text color must come from theme (applied inline in render)
-  backText: {fontSize: 13, fontWeight: '900'},
-
-  // ✅ CHANGED: removed hardcoded color
   title: {fontSize: 18, fontWeight: '900'},
-
-  // ✅ CHANGED: removed hardcoded color
   sub: {fontWeight: '700', marginTop: 2, fontSize: 12},
 
-  // ✅ CHANGED: removed hardcoded border/background here (applied inline)
   amountBox: {
     marginHorizontal: 16,
     marginTop: 6,
@@ -263,8 +206,6 @@ const styles = StyleSheet.create({
     padding: 14,
     alignItems: 'center',
   },
-
-  // ✅ CHANGED: removed hardcoded colors (applied inline)
   amountLabel: {fontWeight: '900', fontSize: 12},
   amountText: {fontSize: 44, fontWeight: '900', marginTop: 6},
   amountHint: {marginTop: 6, fontSize: 12},
@@ -275,26 +216,19 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
   },
-
-  // ✅ CHANGED: removed hardcoded borderColor here (applied inline per key)
   key: {
     borderRadius: 16,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  // ✅ CHANGED: removed hardcoded color here (applied inline)
   keyText: {fontSize: 22, fontWeight: '900'},
 
   bottomRow: {paddingBottom: 14},
-
-  // ✅ CHANGED: removed hardcoded backgroundColor here (applied inline)
   continueBtn: {
     borderRadius: 16,
     paddingVertical: 14,
     alignItems: 'center',
   },
-
   continueText: {color: '#020617', fontWeight: '900', fontSize: 16},
 });

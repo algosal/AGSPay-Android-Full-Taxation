@@ -24,6 +24,7 @@ import ReceiptScreen from './components/Receipt/ReceiptScreen';
 
 import PaymentTerminal from './components/PaymentTerminal';
 import {themes} from './components/theme/agTheme';
+import FixedTipScreen from './components/Tip/FixedTipScreen';
 
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
@@ -331,7 +332,7 @@ export default function App() {
       totalLabel: centsToMoney(totalCents),
     });
 
-    go('TIP');
+    go('FIXED_TIP');
   };
 
   // ---------- TIP ----------
@@ -455,9 +456,10 @@ export default function App() {
           alignItems: 'center',
           padding: 24,
         }}>
-        <StatusBar
+        {/* <StatusBar
           barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
-        />
+        /> */}
+        <StatusBar translucent backgroundColor="transparent" />
         <ActivityIndicator size="large" />
         <Text style={{marginTop: 12, color: theme.muted}}>Starting AGPay…</Text>
       </SafeAreaView>
@@ -530,6 +532,16 @@ export default function App() {
           }}
         />
       );
+    if (screen === 'FIXED_TIP')
+      return (
+        <FixedTipScreen
+          theme={theme}
+          chargeData={chargeData}
+          onBack={() => go('AMOUNT')}
+          onOther={() => go('TIP')} // go to your existing custom keypad tip screen
+          onDone={handleTipDone} // skip keypad and go straight to checkout totals
+        />
+      );
 
     if (screen === 'AMOUNT')
       return (
@@ -588,10 +600,13 @@ export default function App() {
     !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
   return (
-    <SafeAreaView style={{flex: 1, backgroundColor: theme.bg}}>
-      <StatusBar
+    <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
+      {/* <StatusBar
         barStyle={theme.mode === 'light' ? 'dark-content' : 'light-content'}
-      />
+      /> */}
+      {/* <StatusBar hidden={true} /> */}
+      <StatusBar translucent backgroundColor="transparent" />
+      {/* <StatusBar barStyle="light-content" /> */}
 
       {showFloatingToggle ? (
         <TouchableOpacity
