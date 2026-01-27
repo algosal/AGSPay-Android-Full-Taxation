@@ -90,10 +90,8 @@ function buildReceiptHtml(receipt) {
     {label: 'Subtotal', amount: money(subtotalCents)},
     {label: 'Sales Tax', amount: money(taxCents)},
     {label: 'Service Fee', amount: money(albaFeeCents)},
+    {label: 'Tip', amount: money(tipCents)},
   ];
-
-  // Only show Tip row if it exists or is explicitly provided (including 0 is OK to show, but optional)
-  lineItems.push({label: 'Tip', amount: money(tipCents)});
 
   const itemsHtml = lineItems
     .map(
@@ -287,11 +285,17 @@ export default function ReceiptScreen({receipt, onDone, onBack}) {
     }
   }, [localReceipt]);
 
+  const handleBack = useCallback(() => {
+    // ✅ fail-safe: if onBack isn’t wired, fall back to onDone
+    if (typeof onBack === 'function') return onBack();
+    if (typeof onDone === 'function') return onDone();
+  }, [onBack, onDone]);
+
   return (
     <View style={styles.root}>
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <TouchableOpacity onPress={handleBack} style={styles.backBtn}>
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
 

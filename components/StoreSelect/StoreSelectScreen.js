@@ -56,6 +56,49 @@ function buildStoreRef(store) {
   return `${su}#${se}`;
 }
 
+/**
+ * Try to decide whether a store belongs to the selected corporate.
+ * Supports several common shapes without needing backend changes.
+ */
+function storeMatchesCorporate(store, sel) {
+  if (!store || !sel) return false;
+
+  const selCorporateId = sel?.corporateId ? String(sel.corporateId) : null;
+  const selCorporateRef = sel?.corporateRef ? String(sel.corporateRef) : null;
+
+  // Direct ID matches (most common)
+  const candidates = [
+    store?.corporateId,
+    store?.corporateUuid,
+    store?.corpId,
+    store?.corporate_id,
+    store?.corporate_uuid,
+  ]
+    .filter(v => v !== undefined && v !== null)
+    .map(v => String(v));
+
+  if (selCorporateId && candidates.includes(selCorporateId)) return true;
+
+  // Direct Ref matches (if your backend keys by corporateRef)
+  const refCandidates = [store?.corporateRef, store?.corporate_ref]
+    .filter(v => v !== undefined && v !== null)
+    .map(v => String(v));
+
+  if (selCorporateRef && refCandidates.includes(selCorporateRef)) return true;
+
+  // If corpStoreKey encodes corporate info, try to match it
+  // Example patterns:
+  // - "corporateUuid#...#storeUuid#..."
+  // - "corporateRef#storeUuid"
+  const corpStoreKey = store?.corpStoreKey ? String(store.corpStoreKey) : '';
+  if (corpStoreKey) {
+    if (selCorporateId && corpStoreKey.includes(selCorporateId)) return true;
+    if (selCorporateRef && corpStoreKey.includes(selCorporateRef)) return true;
+  }
+
+  return false;
+}
+
 export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState([]);
@@ -64,22 +107,26 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
     (async () => {
       const sel = await readAgpaySelection();
 
-      if (!sel?.corporateId) {
-        console.log('❌ Missing corporateId in agpaySelection:', sel);
+      if (!sel?.corporateId && !sel?.corporateRef) {
+        console.log(
+          '❌ Missing corporateId/corporateRef in agpaySelection:',
+          sel,
+        );
         Alert.alert(
           'Missing corporate',
-          'Corporate selection missing corporateId. Please select a corporate again.',
+          'Corporate selection missing corporate info. Please select a corporate again.',
         );
         setLoading(false);
         return;
       }
 
-      await loadStores(sel.corporateId);
+      // Prefer corporateId if present, else corporateRef
+      await loadStores(sel?.corporateId || sel?.corporateRef, sel);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadStores(corporateId) {
+  async function loadStores(corporateKey, sel) {
     try {
       setLoading(true);
 
@@ -89,11 +136,14 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
         return;
       }
 
-      const encodedCorporateId = encodeURIComponent(String(corporateId));
-      const url = `${STORES_URL}?corporateId=${encodedCorporateId}`;
+      // Try the backend filter first using corporateId (as you already do)
+      const encodedCorporateKey = encodeURIComponent(String(corporateKey));
+      const url = `${STORES_URL}?corporateId=${encodedCorporateKey}`;
 
       console.log('STORES → fetching with JWT (GET by corporateId)');
       console.log('STORES → url:', url);
+      console.log('STORES → selection corporateId:', sel?.corporateId);
+      console.log('STORES → selection corporateRef:', sel?.corporateRef);
 
       const resp = await fetch(url, {
         method: 'GET',
@@ -119,9 +169,40 @@ export default function StoreSelectScreen({onStorePicked, onBack, onLogout}) {
         data = null;
       }
 
-      console.log('STORES → received:', data);
+      const arr = Array.isArray(data) ? data : [];
+      console.log('STORES → received count:', arr.length);
 
-      setStores(Array.isArray(data) ? data : []);
+      // ✅ Client-side filter fallback (works even if API returns all stores)
+      const filtered = arr.filter(s => storeMatchesCorporate(s, sel));
+      console.log(
+        'STORES → filtered count:',
+        filtered.length,
+        ' (selection corporateId:',
+        sel?.corporateId,
+        'corporateRef:',
+        sel?.corporateRef,
+        ')',
+      );
+
+      // If filter finds nothing, keep raw list but log clearly
+      if (filtered.length === 0 && arr.length > 0) {
+        console.log(
+          '⚠️ STORES → filter found 0 matches. Showing ALL stores so UI is not blocked.',
+        );
+        console.log(
+          '⚠️ Sample store keys:',
+          arr.slice(0, 3).map(x => ({
+            storeName: x?.storeName,
+            corporateId: x?.corporateId,
+            corporateUuid: x?.corporateUuid,
+            corporateRef: x?.corporateRef,
+            corpStoreKey: x?.corpStoreKey,
+          })),
+        );
+        setStores(arr);
+      } else {
+        setStores(filtered);
+      }
     } catch (e) {
       console.log('STORES → exception:', e);
       Alert.alert('Error', 'Unable to load stores.');

@@ -18,9 +18,8 @@ import PaymentTerminal from './components/PaymentTerminal';
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
-// ✅ Tax + Service Fee rules (edit these as needed)
-const TAX_RATE = 0.08875; // 8.875%
-const SERVICE_FEE_RATE = 0.03; // 3%
+// --- Tax/Fee constants (NYC) ---
+const TAX_RATE = 0.0885; // 8.85%
 
 async function tokenProvider() {
   const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
@@ -48,9 +47,30 @@ function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
-function safeCents(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+/**
+ * Service fee rule (your spec):
+ * - fee = (2.7% of base + $0.05) + extra
+ * - extra linearly ramps from $0.05 at $0 total to $0.50 at $100 total
+ *   => extra = $0.05 + (min(total,100)/100)*$0.45
+ * - minimum enforced: at least $0.05 (already satisfied by above)
+ *
+ * base = subtotal + tax + tip   (amount untouched; tax calculated; tip user-entered)
+ */
+function calcServiceFeeCents(baseCents) {
+  const base = Math.max(0, Number(baseCents || 0));
+
+  // 2.7% + 5 cents
+  const percentPart = Math.round(base * 0.027);
+  const fixedPart = 5;
+
+  // extra ramp: 5c -> 50c over $0 -> $100
+  const capped = Math.min(base, 10000); // $100 in cents
+  const extra = 5 + Math.round((capped / 10000) * 45); // 5..50
+
+  const fee = percentPart + fixedPart + extra;
+
+  // minimum 5 cents (always true, but keep hard guard)
+  return Math.max(5, fee);
 }
 
 export default function App() {
@@ -82,7 +102,7 @@ export default function App() {
   });
   const [isReaderBusy, setIsReaderBusy] = useState(false);
 
-  // ✅ New: drive the “big status” UI on TerminalScreen
+  // ✅ drive the “big status” UI on TerminalScreen
   const [terminalStatusLine, setTerminalStatusLine] = useState('');
 
   // mount Stripe only when needed
@@ -99,8 +119,9 @@ export default function App() {
       if (
         paymentRef.current?.startCardPayment &&
         paymentRef.current?.ensureInit
-      )
+      ) {
         return true;
+      }
       await new Promise(r => setTimeout(r, 120));
     }
     return false;
@@ -129,19 +150,44 @@ export default function App() {
   };
 
   // ---------- AMOUNT ----------
-  const handleAmountDone = ({amountCents}) => {
-    const subtotalCents = safeCents(amountCents);
+  // ✅ robustly accepts cents OR dollars from AmountEntryScreen
+  const handleAmountDone = payload => {
+    // payload might be: {amountCents} OR {amountDollars} OR {amount}
+    const amountCentsRaw = payload?.amountCents;
+    const amountDollarsRaw =
+      payload?.amountDollars !== undefined
+        ? payload.amountDollars
+        : payload?.amount;
 
-    // ✅ Compute from subtotal
-    const taxCents = safeCents(Math.round(subtotalCents * TAX_RATE));
-    const albaFeeCents = safeCents(
-      Math.round(subtotalCents * SERVICE_FEE_RATE),
-    );
+    let subtotalCents = 0;
 
-    const totalCents = safeCents(subtotalCents + taxCents + albaFeeCents);
+    if (Number.isFinite(Number(amountCentsRaw)) && Number(amountCentsRaw) > 0) {
+      // treat as cents
+      subtotalCents = Math.round(Number(amountCentsRaw));
+    } else if (
+      Number.isFinite(Number(amountDollarsRaw)) &&
+      Number(amountDollarsRaw) > 0
+    ) {
+      // treat as dollars
+      subtotalCents = Math.round(Number(amountDollarsRaw) * 100);
+    } else {
+      subtotalCents = 0;
+    }
+
+    // tax based on subtotal (amount untouched)
+    const taxCents = Math.round(subtotalCents * TAX_RATE);
+
+    // total before tip (tip will be added on TIP screen)
+    const baseBeforeTipCents = subtotalCents + taxCents;
+
+    // service fee computed on (subtotal + tax + tip) per your spec,
+    // but tip is not known yet, so we set it to 0 here and recompute after tip.
+    const albaFeeCents = calcServiceFeeCents(baseBeforeTipCents);
+
+    const totalCents = baseBeforeTipCents + albaFeeCents;
 
     setChargeData({
-      method: 'CASH', // still default until Checkout chooses card
+      method: 'CASH',
       currency: 'usd',
       subtotalCents,
       taxCents,
@@ -162,20 +208,25 @@ export default function App() {
       albaFeeCents: 0,
       tipCents: 0,
       currency: 'usd',
+      method: 'CASH',
     };
 
-    const tip = safeCents(tipCents);
+    const subtotal = Number(prev.subtotalCents || 0);
+    const tax = Number(prev.taxCents || 0);
+    const tip = Math.max(0, Math.round(Number(tipCents || 0)));
 
-    const totalCents = safeCents(
-      safeCents(prev.subtotalCents) +
-        safeCents(prev.taxCents) +
-        safeCents(prev.albaFeeCents) +
-        tip,
-    );
+    // base = subtotal + tax + tip  (per your requirement)
+    const baseCents = subtotal + tax + tip;
+
+    // recompute service fee AFTER tip is known
+    const albaFeeCents = calcServiceFeeCents(baseCents);
+
+    const totalCents = baseCents + albaFeeCents;
 
     setChargeData({
       ...prev,
       tipCents: tip,
+      albaFeeCents,
       totalCents,
       totalLabel: centsToMoney(totalCents),
     });
@@ -185,10 +236,8 @@ export default function App() {
 
   // ---------- CASH ----------
   const handleCashReceipt = data => {
-    // Ensure receipt contains the line items so ReceiptScreen prints them.
-    const d = data || chargeData || {};
     setReceipt({
-      ...(d || {}),
+      ...(data || {}),
       method: 'CASH',
       paymentMethod: 'CASH',
       createdAtText: new Date().toLocaleString(),
@@ -234,7 +283,6 @@ export default function App() {
   };
 
   const handleCardConfirm = async data => {
-    // data is chargeData from CheckoutScreen; keep it as the breakdown for PaymentTerminal.
     setChargeData(data);
     go('TERMINAL'); // keep employee on Terminal screen
     // important: run after navigation kicks in so Stripe can mount
@@ -242,20 +290,7 @@ export default function App() {
   };
 
   const handlePaymentSuccess = receiptPayload => {
-    // Ensure receipt includes the line items used by ReceiptScreen.
-    // PaymentTerminal already includes breakdown; this makes printing deterministic.
-    const b = receiptPayload?.breakdown || chargeData || {};
-
-    setReceipt({
-      ...(receiptPayload || {}),
-      subtotalCents: safeCents(
-        receiptPayload?.subtotalCents ?? b.subtotalCents,
-      ),
-      taxCents: safeCents(receiptPayload?.taxCents ?? b.taxCents),
-      albaFeeCents: safeCents(receiptPayload?.albaFeeCents ?? b.albaFeeCents),
-      tipCents: safeCents(receiptPayload?.tipCents ?? b.tipCents),
-    });
-
+    setReceipt(receiptPayload);
     setStripeEnabled(false);
     setIsReaderBusy(false);
     go('RECEIPT');
@@ -293,7 +328,7 @@ export default function App() {
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
-          terminalStatusLine={terminalStatusLine} // ✅ show big status line
+          terminalStatusLine={terminalStatusLine}
           onConnectReader={async () => {
             setStripeEnabled(true);
             const ready = await waitForPaymentRefReady();
@@ -357,6 +392,7 @@ export default function App() {
       return (
         <ReceiptScreen
           receipt={receipt}
+          onBack={() => go('CHECKOUT')} // ✅ Back goes to Checkout (change if you prefer Terminal)
           onDone={() => {
             setReceipt(null);
             setChargeData(null);
@@ -396,7 +432,7 @@ export default function App() {
               breakdown={chargeData || null}
               onReaderStatusChange={setReaderStatus}
               onPaymentSuccess={handlePaymentSuccess}
-              onTerminalStatusLine={setTerminalStatusLine} // ✅ publish big status
+              onTerminalStatusLine={setTerminalStatusLine}
             />
           </StripeTerminalProvider>
         </View>
