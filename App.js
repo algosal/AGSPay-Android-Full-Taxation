@@ -29,6 +29,10 @@ import FixedTipScreen from './components/Tip/FixedTipScreen';
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
+// ✅ Verify user role endpoint (pk only)
+const VERIFY_ME_URL =
+  'https://omrb8dwy0j.execute-api.us-east-2.amazonaws.com/prod/VerifyMe';
+
 // --- Tax/Fee constants (NYC) ---
 const TAX_RATE = 0.0885; // 8.85%
 
@@ -158,6 +162,123 @@ async function clearAgpayComment() {
   }
 }
 
+// ---------------------- VerifyMe (pk only) ----------------------
+
+function normalizeUserPk(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (s.startsWith('USER#')) return s;
+  return `USER#${s}`;
+}
+
+async function readUserPkFromKeychain() {
+  // We try multiple known fields so you don’t have to reshuffle storage today
+  try {
+    const sess = await readAgpaySession();
+    const raw =
+      sess?.pk ||
+      sess?.ownerId ||
+      sess?.userPk ||
+      sess?.userId ||
+      sess?.uuid ||
+      null;
+
+    if (raw) return normalizeUserPk(raw);
+
+    // Fallback: agpayAuth internet creds sometimes holds more
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      try {
+        const parsed = JSON.parse(internet.password);
+        const raw2 =
+          parsed?.pk ||
+          parsed?.ownerId ||
+          parsed?.userPk ||
+          parsed?.userId ||
+          parsed?.uuid ||
+          null;
+        if (raw2) return normalizeUserPk(raw2);
+      } catch {}
+    }
+
+    return '';
+  } catch (e) {
+    console.log('readUserPkFromKeychain error:', e);
+    return '';
+  }
+}
+
+/**
+ * Calls VerifyMe with pk only.
+ * Works for "non-proxy event" AND proxy-style responses.
+ */
+async function verifyUserRoleByPk(pk) {
+  const safePk = normalizeUserPk(pk);
+  if (!safePk) throw new Error('Missing pk for VerifyMe');
+
+  console.log('✅ VerifyMe => pk:', safePk);
+
+  // Primary attempt: POST JSON body {pk}
+  let resp;
+  let text = '';
+  try {
+    resp = await fetch(VERIFY_ME_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pk: safePk}),
+    });
+    text = await resp.text();
+    console.log('✅ VerifyMe => HTTP:', resp.status, text);
+  } catch (e) {
+    console.log('VerifyMe POST fetch error:', e);
+  }
+
+  // Fallback attempt: GET ?pk=...
+  if (!resp || !resp.ok) {
+    try {
+      const url = `${VERIFY_ME_URL}?pk=${encodeURIComponent(safePk)}`;
+      const r2 = await fetch(url, {method: 'GET'});
+      const t2 = await r2.text();
+      console.log('✅ VerifyMe (GET fallback) => HTTP:', r2.status, t2);
+      resp = r2;
+      text = t2;
+    } catch (e) {
+      console.log('VerifyMe GET fetch error:', e);
+    }
+  }
+
+  if (!resp || !resp.ok) {
+    throw new Error(`VerifyMe failed. HTTP ${resp?.status || 'NO_RESP'}`);
+  }
+
+  // Parse JSON (handle both direct + gateway wrapper)
+  let outer = null;
+  try {
+    outer = JSON.parse(String(text || '').trim());
+  } catch {
+    outer = null;
+  }
+
+  // If lambda is wrapped: {statusCode, body:"{...}"}
+  let data = outer;
+  if (outer && typeof outer.body === 'string') {
+    try {
+      data = JSON.parse(outer.body);
+    } catch {
+      data = outer;
+    }
+  }
+
+  const role =
+    data?.user_role || data?.userRole || data?.role || data?.account_role || '';
+
+  return {
+    pk: data?.pk || safePk,
+    user_role: String(role || '').trim(),
+    raw: data,
+  };
+}
+
 // ---------------------- Transaction payload logging ----------------------
 
 function maskToken(t) {
@@ -237,6 +358,45 @@ export default function App() {
     setScreen(next);
   }
 
+  const hardLogoutToLogin = () => {
+    setSession(null);
+    setChargeData(null);
+    setReceipt(null);
+    setStripeEnabled(false);
+    setReaderStatus({connected: false, label: ''});
+    setIsReaderBusy(false);
+    setTerminalStatusLine('');
+    setScreen('LOGIN');
+  };
+
+  async function gateVerifyOrLogout(where = 'unknown') {
+    try {
+      const pk = await readUserPkFromKeychain();
+      if (!pk) {
+        console.log(`VerifyMe(${where}) => missing pk, skipping gate`);
+        return {ok: true, skipped: true};
+      }
+
+      const res = await verifyUserRoleByPk(pk);
+      console.log(`VerifyMe(${where}) => user_role:`, res?.user_role);
+
+      if (String(res?.user_role || '').toLowerCase() === 'banned') {
+        Alert.alert(
+          'Access blocked',
+          'This account is banned. Please contact support.',
+        );
+        hardLogoutToLogin();
+        return {ok: false, banned: true};
+      }
+
+      return {ok: true, role: res?.user_role || ''};
+    } catch (e) {
+      // If VerifyMe fails, we DO NOT brick the app — but we log loudly.
+      console.log(`VerifyMe(${where}) error:`, e);
+      return {ok: true, error: String(e?.message || e)};
+    }
+  }
+
   // ✅ BOOT: decide initial screen before rendering app
   useEffect(() => {
     (async () => {
@@ -251,13 +411,21 @@ export default function App() {
         console.log('BOOT => selection:', sel);
 
         // ✅ Autologin safety: clear comment on app start if token exists
-        // (prevents stale comment if vendor force-closed app mid-transaction)
         if (token) {
           await clearAgpayComment();
         }
 
         // store session in state if present
         if (sess?.token) setSession({token: sess.token});
+
+        // ✅ NEW: verify role on boot if token exists (blocks banned accounts)
+        if (token) {
+          const gate = await gateVerifyOrLogout('BOOT');
+          if (!gate.ok) {
+            setBooting(false);
+            return;
+          }
+        }
 
         if (token && sel?.storeRef) {
           console.log('BOOT => store already selected, going TERMINAL');
@@ -296,25 +464,24 @@ export default function App() {
   }
 
   // ---------- LOGIN ----------
-  const handleLoginSuccess = payload => {
+  const handleLoginSuccess = async payload => {
     const token = payload?.token;
     if (!token) {
       Alert.alert('Login failed');
       return;
     }
+
     setSession({token});
+
+    // ✅ NEW: verify immediately after login (before CORP)
+    const gate = await gateVerifyOrLogout('LOGIN');
+    if (!gate.ok) return;
+
     go('CORP');
   };
 
   const handleLogout = () => {
-    setSession(null);
-    setChargeData(null);
-    setReceipt(null);
-    setStripeEnabled(false);
-    setReaderStatus({connected: false, label: ''});
-    setIsReaderBusy(false);
-    setTerminalStatusLine('');
-    go('LOGIN');
+    hardLogoutToLogin();
   };
 
   // ---------- AMOUNT ----------
@@ -406,6 +573,10 @@ export default function App() {
     startingCardRef.current = true;
 
     try {
+      // ✅ optional: re-check role right before card payment
+      const gate = await gateVerifyOrLogout('PRE_CARD');
+      if (!gate.ok) return;
+
       setStripeEnabled(true);
       setIsReaderBusy(true);
 
@@ -524,6 +695,10 @@ export default function App() {
           chargeData={chargeData}
           terminalStatusLine={terminalStatusLine}
           onConnectReader={async () => {
+            // ✅ optional: re-check role before connecting reader
+            const gate = await gateVerifyOrLogout('PRE_CONNECT_READER');
+            if (!gate.ok) return;
+
             setStripeEnabled(true);
             const ready = await waitForPaymentRefReady();
             if (!ready) {

@@ -68,7 +68,7 @@ async function readAgpayComment() {
 // ✅ clear comment after transaction completes
 async function clearAgpayComment() {
   try {
-    await Keychain.setInternetCredentials('agpayComment', 'comment', '');
+    await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
     return true;
   } catch (e) {
     console.log('clearAgpayComment error:', e);
@@ -381,7 +381,7 @@ const PaymentTerminal = forwardRef(
 
         const {error: discErr} = await discoverReaders({
           discoveryMethod: 'tapToPay',
-          simulated: true,
+          simulated: false,
         });
 
         if (discErr) {

@@ -1,6 +1,6 @@
 // FILE: components/Terminal/TerminalScreen.jsx
 
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {View, Text, Alert, Pressable, TextInput} from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import terminalStyles from './terminal.styles';
@@ -16,38 +16,39 @@ async function readAgpaySelection() {
   }
 }
 
+/**
+ * ✅ IMPORTANT:
+ * App/Receipt clears by storing a single space " ".
+ * So we always trim() here and treat it as empty.
+ */
 async function readAgpayComment() {
   try {
     const creds = await Keychain.getInternetCredentials('agpayComment');
-    if (!creds?.password) return '';
-    return String(creds.password || '');
+    const raw = creds?.password ? String(creds.password) : '';
+    return raw.trim(); // " " => ""
   } catch (e) {
     console.log('readAgpayComment error:', e);
     return '';
   }
 }
 
+/**
+ * ✅ IMPORTANT (Android):
+ * setInternetCredentials throws if username OR password is empty.
+ * So if user leaves comment empty, store " " instead.
+ */
 async function writeAgpayComment(text) {
   try {
+    const normalized = String(text || '').trim();
+    const safePassword = normalized.length ? normalized : ' ';
     await Keychain.setInternetCredentials(
       'agpayComment',
       'comment',
-      String(text || ''),
+      safePassword,
     );
     return true;
   } catch (e) {
     console.log('writeAgpayComment error:', e);
-    return false;
-  }
-}
-
-async function clearAgpayComment() {
-  try {
-    // safest: set to empty (avoids reset errors on some Android builds)
-    await Keychain.setInternetCredentials('agpayComment', 'comment', '');
-    return true;
-  } catch (e) {
-    console.log('clearAgpayComment error:', e);
     return false;
   }
 }
@@ -65,24 +66,15 @@ export default function TerminalScreen({
   isReaderBusy,
   chargeData,
 
-  // ✅ App.js must pass this and bump it after CASH success too
+  // kept in props in case App still passes it; not used now
   commentResetNonce,
 
-  // ✅ OPTIONAL: if you wire this from App.js
   terminalStatusLine,
-
-  // ✅ theme comes from App.js
   theme,
 }) {
   const s = terminalStyles;
   const [sel, setSel] = useState(null);
   const [comment, setComment] = useState('');
-
-  // Track last-seen "success id" so we clear only once per completed transaction
-  const lastClearedSuccessIdRef = useRef(null);
-
-  // ✅ Prevent stale Keychain read from re-populating after a reset
-  const ignoreHydrationRef = useRef(false);
 
   const t = useMemo(() => {
     return {
@@ -106,76 +98,13 @@ export default function TerminalScreen({
       if (mounted) setSel(selection || null);
 
       const saved = await readAgpayComment();
-
-      // ✅ If a reset was requested, DO NOT hydrate the old comment back in
-      if (!mounted) return;
-      if (ignoreHydrationRef.current) return;
-
-      setComment(saved || '');
+      if (mounted) setComment(saved || '');
     })();
 
     return () => {
       mounted = false;
     };
   }, []);
-
-  // ✅ HARD RESET: when App increments nonce, clear immediately
-  // This is what fixes CASH flow where Payment.js is never hit.
-  useEffect(() => {
-    if (commentResetNonce === undefined || commentResetNonce === null) return;
-
-    (async () => {
-      try {
-        // ✅ block any in-flight hydration from overwriting the clear
-        ignoreHydrationRef.current = true;
-
-        setComment('');
-        await clearAgpayComment();
-
-        // also clear the "auto-clear guard" so next success can clear again if needed
-        lastClearedSuccessIdRef.current = null;
-
-        // allow future loads (but this instance is already mounted)
-        // keep it true for the rest of this mount; safest to avoid re-hydration surprises
-      } catch (e) {
-        console.log('commentResetNonce clear error:', e);
-      }
-    })();
-  }, [commentResetNonce]);
-
-  // ✅ Auto-clear comment after a successful transaction is detected (CARD flow / any flow that marks success)
-  useEffect(() => {
-    const status = String(chargeData?.status || '').toLowerCase();
-    const isSuccess =
-      status === 'succeeded' ||
-      status === 'success' ||
-      status === 'paid' ||
-      status === 'completed' ||
-      chargeData?.success === true;
-
-    const successId =
-      chargeData?.receiptId ||
-      chargeData?.transactionId ||
-      chargeData?.paymentIntentId ||
-      chargeData?.chargeId ||
-      chargeData?.clientEpochMs ||
-      chargeData?.createdAt ||
-      chargeData?.paidAt ||
-      null;
-
-    if (!isSuccess || !successId) return;
-
-    if (lastClearedSuccessIdRef.current === successId) return;
-    lastClearedSuccessIdRef.current = successId;
-
-    (async () => {
-      // also block hydration surprises after a success-clear
-      ignoreHydrationRef.current = true;
-
-      await clearAgpayComment();
-      setComment('');
-    })();
-  }, [chargeData]);
 
   const connected = !!readerStatus?.connected;
 

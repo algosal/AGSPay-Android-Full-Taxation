@@ -1,3 +1,4 @@
+// FILE: components/Login/Login.js
 import React, {useState} from 'react';
 import {
   View,
@@ -77,6 +78,21 @@ function resolveOwnerId(payload) {
   return null;
 }
 
+// ✅ NEW: role resolver (supports a few likely shapes)
+function resolveUserRole(payload) {
+  if (!payload) return null;
+
+  const role =
+    payload?.profile?.user_role ??
+    payload?.profile?.role ??
+    payload?.user_role ??
+    payload?.role ??
+    null;
+
+  if (role === null || role === undefined) return null;
+  return String(role).trim().toLowerCase();
+}
+
 async function storeTokenAndSession({token, sessionObj}) {
   // Token should be stored as a plain string (never JSON.parse it later)
   await Keychain.setGenericPassword('token', token, {
@@ -148,6 +164,18 @@ export default function Login({onLoginSuccess}) {
       const normalized = normalizeLoginResponse(rawJson || {});
       console.log('LOGIN => normalized:', JSON.stringify(normalized, null, 2));
 
+      // ✅ NEW: block banned users BEFORE saving anything
+      const userRole = resolveUserRole(normalized);
+      console.log('LOGIN => resolved user_role:', userRole);
+
+      if (userRole === 'banned') {
+        Alert.alert(
+          'User temporarily banned',
+          'Call AGS LLC at 1-800-AGS-Gold.',
+        );
+        return;
+      }
+
       const token = resolveToken(normalized);
       const ownerId = resolveOwnerId(normalized);
 
@@ -191,8 +219,6 @@ export default function Login({onLoginSuccess}) {
       );
 
       // 4) Add two safe stores that eliminate the “JSON Parse error: Unexpected character”
-      //    - token stored as plain string in service agpayAuthToken
-      //    - session stored as JSON in service agpaySession
       await storeTokenAndSession({token, sessionObj: authSession});
 
       console.log(
@@ -242,7 +268,7 @@ export default function Login({onLoginSuccess}) {
               placeholder="••••••••"
               placeholderTextColor="#6b7280"
               secureTextEntry={!showPassword}
-              autoCapitalize="none" // prevents initial caps
+              autoCapitalize="none"
               autoCorrect={false}
               value={password}
               onChangeText={setPassword}

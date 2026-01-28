@@ -1,4 +1,4 @@
-﻿// components/Receipt/ReceiptScreen.js
+﻿// FILE: components/Receipt/ReceiptScreen.js
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {View, Text, Pressable, StyleSheet, Alert} from 'react-native';
 import RNPrint from 'react-native-print';
@@ -312,7 +312,7 @@ export default function ReceiptScreen({
       const html = buildReceiptHtml(localReceipt);
       await RNPrint.print({html});
 
-      // ✅ NEW: clear comment after successful print too
+      // ✅ clear comment after successful print too
       await clearAgpayCommentFromKeychain();
     } catch (e) {
       console.log('PRINT error:', e);
