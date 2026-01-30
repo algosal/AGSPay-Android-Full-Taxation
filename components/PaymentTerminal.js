@@ -77,7 +77,6 @@ async function clearAgpayComment() {
 }
 
 // ✅ Stripe metadata values should be strings.
-// Your backend also sanitizes, but we do best-effort here too.
 function toStripeMetadata(obj) {
   const out = {};
   try {
@@ -96,6 +95,35 @@ function toStripeMetadata(obj) {
 }
 
 /**
+ * Build a Stripe PaymentIntent.description that helps segregation in Stripe:
+ * "Alba Gold Systems — <Corporate> / <Store> — <optional comment>"
+ *
+ * We keep it short(ish) and safe.
+ */
+function buildStripeDescription({corporateName, storeName, comment}) {
+  const corp = String(corporateName || '').trim();
+  const store = String(storeName || '').trim();
+  const cmt = String(comment || '').trim();
+
+  const parts = [];
+  // branding prefix is optional, but helps in Stripe searches
+  parts.push('Alba Gold Systems');
+
+  if (corp || store) {
+    parts.push(
+      `${corp || 'Corporate'} / ${store || 'Store'}`
+        .replace(/\s+/g, ' ')
+        .trim(),
+    );
+  }
+
+  if (cmt) parts.push(cmt.replace(/\s+/g, ' ').trim());
+
+  // Stripe description max is 255 chars; enforce to be safe
+  return parts.join(' — ').slice(0, 255);
+}
+
+/**
  * Frontend-only fix:
  * - Lambda returns: { statusCode, body: "{\"client_secret\":\"...\"}" }
  * - We parse deterministically and fail loudly if parsing is the issue.
@@ -108,12 +136,10 @@ async function createIntentOnBackend({
 }) {
   const jwt = await readAgpayAuthToken();
 
-  // ✅ IMPORTANT: send EXACT keys your lambda expects: amount, currency, metadata, description
   const payload = {
     amount: Number(amountCents || 0),
     currency: String(currency || 'usd'),
     metadata: metadata || {},
-    // only include if non-empty
     ...(description ? {description: String(description)} : {}),
   };
 
@@ -125,7 +151,7 @@ async function createIntentOnBackend({
       'Content-Type': 'application/json',
       ...(jwt ? {Authorization: jwt} : {}),
     },
-    body: JSON.stringify(payload), // ✅ NOT double-wrapped
+    body: JSON.stringify(payload),
   });
 
   const text = await resp.text();
@@ -261,7 +287,6 @@ const PaymentTerminal = forwardRef(
     const ensureInit = useCallback(async () => {
       if (terminalReady) return true;
 
-      // ✅ Branding text change (UI/status line)
       console.log('Alba Terminal → initialize() start');
       setStatusLine('Initializing Alba Gold Systems Terminal…');
 
@@ -405,9 +430,8 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
-        if (chosen?.simulated) {
+        if (chosen?.simulated)
           console.log('🧪 Using simulated Tap to Pay reader');
-        }
 
         setStatusLine('Connecting Tap to Pay…');
         console.log('📍 Stripe Terminal locationId in use:', LOCATION_ID);
@@ -505,16 +529,20 @@ const PaymentTerminal = forwardRef(
         const uiCommentRaw = await readAgpayComment();
         const uiComment = String(uiCommentRaw || '').trim();
 
-        // ✅ Send comment to Stripe:
-        // - description (Stripe PaymentIntent.description)
-        // - metadata.comment (easy visibility)
+        // ✅ NEW: build a Stripe description that includes corp/store (+ comment)
+        const stripeDescription = buildStripeDescription({
+          corporateName: selection?.corporateName || '',
+          storeName: selection?.storeName || '',
+          comment: uiComment || '',
+        });
+
+        // ✅ metadata (strings only)
         const baseMeta = {
           corporateRef: selection?.corporateRef || '',
           corporateName: selection?.corporateName || '',
           storeRef: selection?.storeRef || '',
           storeName: selection?.storeName || '',
           ...(uiComment ? {comment: uiComment} : {}),
-          // keep your other fields too (stringified)
           ...(debugMeta || {}),
         };
 
@@ -524,7 +552,8 @@ const PaymentTerminal = forwardRef(
           amountCents: amt,
           currency,
           metadata: meta,
-          description: uiComment || '',
+          // ✅ send corp/store description (instead of only comment)
+          description: stripeDescription,
         });
 
         setStatusLine('Retrieving intent…');
@@ -616,8 +645,10 @@ const PaymentTerminal = forwardRef(
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
           debugMeta: derivedDebugMeta,
 
-          descriptionSentToStripe: uiComment || '',
+          // keep both for your own audit/segregation
+          descriptionSentToStripe: stripeDescription,
           metadataSentToStripe: meta,
+
           clientEpochMs: Date.now(),
         };
 

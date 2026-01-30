@@ -41,7 +41,10 @@ function resolveCents(receipt, key) {
   return nOr0(r[key] ?? b[key]);
 }
 
-function buildReceiptHtml(receipt) {
+/**
+ * ✅ NEW: build HTML with a copy label ("CLIENT COPY" / "VENDOR'S COPY")
+ */
+function buildReceiptHtml(receipt, copyLabel = '') {
   const r = receipt || {};
 
   const totalCents =
@@ -101,6 +104,8 @@ function buildReceiptHtml(receipt) {
     )
     .join('');
 
+  const copy = String(copyLabel || '').trim();
+
   return `
   <html>
   <head>
@@ -122,6 +127,15 @@ function buildReceiptHtml(receipt) {
       .brand { text-align: center; margin-top: 6px; }
       .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
       .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
+
+      .copyTag {
+        margin-top: 6px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
 
       .divider { border-top: 1px solid #000; margin: 8px 0; }
 
@@ -157,6 +171,8 @@ function buildReceiptHtml(receipt) {
         <div class="logo">AGPAY</div>
         <div class="sub">RECEIPT</div>
       </div>
+
+      ${copy ? `<div class="copyTag">${escapeHtml(copy)}</div>` : ''}
 
       <div class="divider"></div>
 
@@ -265,6 +281,10 @@ async function clearAgpayCommentFromKeychain() {
   }
 }
 
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 export default function ReceiptScreen({
   theme,
   receipt,
@@ -303,16 +323,30 @@ export default function ReceiptScreen({
     };
   }, [receipt]);
 
+  /**
+   * ✅ NEW:
+   * Print TWO receipts:
+   *  - Client Copy
+   *  - Vendor's Copy
+   * With a 2s delay between them.
+   */
   const handlePrint = useCallback(async () => {
     try {
       if (!localReceipt) {
         Alert.alert('No receipt', 'Receipt data is not available yet.');
         return;
       }
-      const html = buildReceiptHtml(localReceipt);
-      await RNPrint.print({html});
 
-      // ✅ clear comment after successful print too
+      const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
+      await RNPrint.print({html: htmlClient});
+
+      // 2-second delay
+      await sleep(2000);
+
+      const htmlVendor = buildReceiptHtml(localReceipt, "VENDOR'S COPY");
+      await RNPrint.print({html: htmlVendor});
+
+      // ✅ clear comment after successful prints too
       await clearAgpayCommentFromKeychain();
     } catch (e) {
       console.log('PRINT error:', e);
@@ -360,7 +394,9 @@ export default function ReceiptScreen({
             {backgroundColor: t.inputBg, borderColor: t.border},
             pressFX({pressed}),
           ]}>
-          <Text style={[styles.printText, {color: t.gold}]}>Print</Text>
+          <Text style={[styles.printText, {color: t.gold}]}>
+            Print (Client + Vendor)
+          </Text>
         </Pressable>
 
         <Pressable
@@ -375,7 +411,7 @@ export default function ReceiptScreen({
         </Pressable>
 
         <Text style={[styles.note, {color: t.muted}]}>
-          Receipt prints on a 58mm roll printer.
+          Prints two 58mm receipts (2 seconds apart).
         </Text>
       </View>
     </View>
