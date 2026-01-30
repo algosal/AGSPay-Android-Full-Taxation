@@ -511,8 +511,9 @@ export default function App() {
     const albaFeeCents = calcServiceFeeCents(baseBeforeTipCents);
     const totalCents = baseBeforeTipCents + albaFeeCents;
 
+    // ✅ Default to CARD (Checkout can still switch to CASH)
     setChargeData({
-      method: 'CASH',
+      method: 'CARD',
       currency: 'usd',
       subtotalCents,
       taxCents,
@@ -526,6 +527,7 @@ export default function App() {
   };
 
   // ---------- TIP ----------
+  // ✅ IMPORTANT: go to CHECKOUT (do NOT auto-start card)
   const handleTipDone = ({tipCents}) => {
     const prev = chargeData || {
       subtotalCents: 0,
@@ -533,7 +535,7 @@ export default function App() {
       albaFeeCents: 0,
       tipCents: 0,
       currency: 'usd',
-      method: 'CASH',
+      method: 'CARD',
     };
 
     const subtotal = Number(prev.subtotalCents || 0);
@@ -546,12 +548,14 @@ export default function App() {
 
     setChargeData({
       ...prev,
+      method: 'CARD', // ✅ keep default preselected
       tipCents: tip,
       albaFeeCents,
       totalCents,
       totalLabel: centsToMoney(totalCents),
     });
 
+    // ✅ Back to intended UX
     go('CHECKOUT');
   };
 
@@ -584,7 +588,7 @@ export default function App() {
       if (!ready) {
         Alert.alert(
           'Preparing reader',
-          'Please wait a moment, then press CARD again.',
+          'Please wait a moment, then try again.',
         );
         return;
       }
@@ -759,10 +763,20 @@ export default function App() {
 
     if (screen === 'CHECKOUT')
       return (
+        // inside your CHECKOUT render in App.js, add onCancel:
         <CheckoutScreen
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
+          onCancel={async () => {
+            // cancel means: clear current txn state and go back to terminal
+            setReceipt(null);
+            setChargeData(null);
+            setStripeEnabled(false);
+            setIsReaderBusy(false);
+            setTerminalStatusLine('');
+            go('TERMINAL');
+          }}
           onCashConfirm={handleCashReceipt}
           onCardConfirm={handleCardConfirm}
           isBusy={isReaderBusy}

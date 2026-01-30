@@ -1,6 +1,6 @@
 // FILE: components/Checkout/CheckoutScreen.js
-import React, {useMemo, useState} from 'react';
-import {View, Text, Pressable, StyleSheet} from 'react-native';
+import React, {useEffect, useMemo, useState} from 'react';
+import {Alert, View, Text, Pressable, StyleSheet} from 'react-native';
 import {pressFX, androidRipple} from '../ui/pressFX';
 
 function centsToMoney(cents) {
@@ -8,10 +8,13 @@ function centsToMoney(cents) {
 }
 
 export default function CheckoutScreen({
-  theme, // ✅ CHANGED: accept theme from App.js
+  theme, // accept theme from App.js
 
   chargeData,
   onBack,
+
+  // ✅ NEW: cancel whole txn (App should clear chargeData/receipt and go back)
+  onCancel,
 
   // final actions
   onCashConfirm,
@@ -20,8 +23,7 @@ export default function CheckoutScreen({
   isBusy,
 }) {
   /**
-   * ✅ CHANGED: theme palette (no logic change)
-   * We only replace hardcoded colors with theme values.
+   * theme palette (no logic change)
    */
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -59,11 +61,17 @@ export default function CheckoutScreen({
     };
   }, [chargeData]);
 
-  // default to CASH (employee-friendly)
+  // ✅ DEFAULT TO CARD (but still respects chargeData.method if it is set)
   const [method, setMethod] = useState(() => {
-    const m = String(chargeData?.method || 'CASH').toUpperCase();
-    return m === 'CARD' ? 'CARD' : 'CASH';
+    const m = String(chargeData?.method || 'CARD').toUpperCase();
+    return m === 'CASH' ? 'CASH' : 'CARD';
   });
+
+  // ✅ If chargeData changes later, re-sync (keeps UI correct)
+  useEffect(() => {
+    const m = String(chargeData?.method || 'CARD').toUpperCase();
+    setMethod(m === 'CASH' ? 'CASH' : 'CARD');
+  }, [chargeData?.method]);
 
   const confirmLabel =
     method === 'CASH' ? 'Complete Cash & Print Receipt' : 'Charge Card';
@@ -98,10 +106,7 @@ export default function CheckoutScreen({
             {...androidRipple('rgba(250,204,21,0.12)')}
             style={({pressed}) => [
               s.methodBtn,
-              {
-                borderColor: t.border,
-                backgroundColor: t.altCard,
-              },
+              {borderColor: t.border, backgroundColor: t.altCard},
               method === 'CASH'
                 ? {borderColor: t.gold, backgroundColor: t.inputBg}
                 : null,
@@ -121,10 +126,7 @@ export default function CheckoutScreen({
             {...androidRipple('rgba(250,204,21,0.12)')}
             style={({pressed}) => [
               s.methodBtn,
-              {
-                borderColor: t.border,
-                backgroundColor: t.altCard,
-              },
+              {borderColor: t.border, backgroundColor: t.altCard},
               method === 'CARD'
                 ? {borderColor: t.gold, backgroundColor: t.inputBg}
                 : null,
@@ -186,19 +188,45 @@ export default function CheckoutScreen({
           onPress={() => {
             const payload = {
               ...(data.raw || {}),
-              method,
+              method, // defaults to CARD
               totalCents: data.totalCents,
               totalLabel: data.totalLabel,
             };
 
-            if (method === 'CASH') {
-              onCashConfirm?.(payload);
-            } else {
-              onCardConfirm?.(payload);
-            }
+            if (method === 'CASH') onCashConfirm?.(payload);
+            else onCardConfirm?.(payload);
           }}>
           <Text style={[s.primaryText, {color: t.goldText}]}>
             {isBusy ? 'Processing…' : confirmLabel}
+          </Text>
+        </Pressable>
+
+        {/* ✅ NEW: Cancel */}
+        <Pressable
+          disabled={isBusy}
+          {...androidRipple('rgba(239,68,68,0.14)')}
+          style={({pressed}) => [
+            s.cancelBtn,
+            {borderColor: t.border, backgroundColor: t.altCard},
+            isBusy ? s.primaryBtnDisabled : null,
+            pressFX({pressed}),
+          ]}
+          onPress={() => {
+            Alert.alert(
+              'Cancel transaction?',
+              'This will discard the current amount and tip.',
+              [
+                {text: 'No', style: 'cancel'},
+                {
+                  text: 'Yes, Cancel',
+                  style: 'destructive',
+                  onPress: () => onCancel?.(),
+                },
+              ],
+            );
+          }}>
+          <Text style={[s.cancelText, {color: t.muted}]}>
+            Cancel Transaction
           </Text>
         </Pressable>
 
@@ -297,6 +325,16 @@ const s = StyleSheet.create({
   },
   primaryBtnDisabled: {opacity: 0.6},
   primaryText: {fontWeight: '900', fontSize: 15},
+
+  // ✅ NEW cancel style
+  cancelBtn: {
+    marginTop: 10,
+    borderRadius: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  cancelText: {fontWeight: '900', fontSize: 13},
 
   note: {marginTop: 10, fontSize: 12, fontWeight: '700'},
 });

@@ -261,11 +261,12 @@ const PaymentTerminal = forwardRef(
     const ensureInit = useCallback(async () => {
       if (terminalReady) return true;
 
-      console.log('Stripe Terminal → initialize() start');
-      setStatusLine('Initializing Stripe Terminal…');
+      // ✅ Branding text change (UI/status line)
+      console.log('Alba Terminal → initialize() start');
+      setStatusLine('Initializing Alba Gold Systems Terminal…');
 
       const res = await initialize();
-      console.log('Stripe Terminal → initialize() result:', res);
+      console.log('Alba Terminal → initialize() result:', res);
 
       if (res?.error) {
         setStatusLine(`Init failed: ${res.error?.message || res.error?.code}`);
