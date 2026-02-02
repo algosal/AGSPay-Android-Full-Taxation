@@ -36,15 +36,27 @@ const VERIFY_ME_URL =
 // --- Tax/Fee constants (NYC) ---
 const TAX_RATE = 0.0885; // 8.85%
 
-async function tokenProvider() {
+/**
+ * ✅ StripeTerminalProvider requires:
+ * tokenProvider = { fetchConnectionToken: async () => string }
+ */
+async function fetchConnectionToken() {
+  console.log('🔥 tokenProvider CALLED (about to fetch connection token)');
+  console.log('🔐 connection_token => POST:', CONNECTION_TOKEN_URL);
+
   const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
   const text = await resp.text();
+
+  console.log('🔥 tokenProvider RESP:', resp.status, text);
+
   if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
 
   let data = {};
   try {
-    data = JSON.parse(text);
-  } catch {}
+    data = JSON.parse(String(text || '').trim());
+  } catch {
+    data = {};
+  }
 
   // supports both {secret:"..."} and {body:"{secret:'...'}"}
   let secret = data?.secret || null;
@@ -54,37 +66,38 @@ async function tokenProvider() {
     } catch {}
   }
 
-  if (!secret) throw new Error('Missing connection token');
+  if (!secret || typeof secret !== 'string') {
+    throw new Error('Missing connection token');
+  }
+
+  console.log('✅ connection token length:', secret.length);
   return secret;
 }
+
+const terminalTokenProvider = {
+  fetchConnectionToken,
+};
 
 function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
 /**
- * Service fee rule (your spec):
+ * Service fee rule:
  * - fee = (2.7% of base + $0.05) + extra
- * - extra linearly ramps from $0.05 at $0 total to $0.50 at $100 total
- *   => extra = $0.05 + (min(total,100)/100)*$0.45
- * - minimum enforced: at least $0.05 (hard guard)
- *
- * base = subtotal + tax + tip
+ * - extra ramps from $0.05 at $0 total to $0.50 at $100 total
+ * - minimum enforced: at least $0.05
  */
 function calcServiceFeeCents(baseCents) {
   const base = Math.max(0, Number(baseCents || 0));
 
-  // 2.7% + 5 cents
   const percentPart = Math.round(base * 0.027);
   const fixedPart = 5;
 
-  // extra ramp: 5c -> 50c over $0 -> $100
-  const capped = Math.min(base, 10000); // $100 in cents
+  const capped = Math.min(base, 10000); // $100
   const extra = 5 + Math.round((capped / 10000) * 45); // 5..50
 
   const fee = percentPart + fixedPart + extra;
-
-  // minimum 5 cents
   return Math.max(5, fee);
 }
 
@@ -145,13 +158,6 @@ async function readAgpaySelection() {
   }
 }
 
-/**
- * ✅ IMPORTANT (Android):
- * setInternetCredentials() throws if username OR password is empty.
- * So we clear by storing a single space, and reading code should trim().
- *
- * This ONLY touches 'agpayComment' (NOT selection/auth).
- */
 async function clearAgpayComment() {
   try {
     await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
@@ -172,7 +178,6 @@ function normalizeUserPk(raw) {
 }
 
 async function readUserPkFromKeychain() {
-  // We try multiple known fields so you don’t have to reshuffle storage today
   try {
     const sess = await readAgpaySession();
     const raw =
@@ -185,7 +190,6 @@ async function readUserPkFromKeychain() {
 
     if (raw) return normalizeUserPk(raw);
 
-    // Fallback: agpayAuth internet creds sometimes holds more
     const internet = await Keychain.getInternetCredentials('agpayAuth');
     if (internet?.password) {
       try {
@@ -208,17 +212,12 @@ async function readUserPkFromKeychain() {
   }
 }
 
-/**
- * Calls VerifyMe with pk only.
- * Works for "non-proxy event" AND proxy-style responses.
- */
 async function verifyUserRoleByPk(pk) {
   const safePk = normalizeUserPk(pk);
   if (!safePk) throw new Error('Missing pk for VerifyMe');
 
   console.log('✅ VerifyMe => pk:', safePk);
 
-  // Primary attempt: POST JSON body {pk}
   let resp;
   let text = '';
   try {
@@ -233,7 +232,6 @@ async function verifyUserRoleByPk(pk) {
     console.log('VerifyMe POST fetch error:', e);
   }
 
-  // Fallback attempt: GET ?pk=...
   if (!resp || !resp.ok) {
     try {
       const url = `${VERIFY_ME_URL}?pk=${encodeURIComponent(safePk)}`;
@@ -251,7 +249,6 @@ async function verifyUserRoleByPk(pk) {
     throw new Error(`VerifyMe failed. HTTP ${resp?.status || 'NO_RESP'}`);
   }
 
-  // Parse JSON (handle both direct + gateway wrapper)
   let outer = null;
   try {
     outer = JSON.parse(String(text || '').trim());
@@ -259,7 +256,6 @@ async function verifyUserRoleByPk(pk) {
     outer = null;
   }
 
-  // If lambda is wrapped: {statusCode, body:"{...}"}
   let data = outer;
   if (outer && typeof outer.body === 'string') {
     try {
@@ -279,55 +275,10 @@ async function verifyUserRoleByPk(pk) {
   };
 }
 
-// ---------------------- Transaction payload logging ----------------------
-
-function maskToken(t) {
-  if (!t || typeof t !== 'string') return null;
-  if (t.length <= 18) return '***';
-  return t.slice(0, 10) + '…' + t.slice(-6);
-}
-
-function buildTransactionPayload({session, selection, chargeData, receipt}) {
-  return {
-    ownerId: session?.ownerId || session?.userId || null,
-    email: session?.email || null,
-
-    corporateId: selection?.corporateId || null,
-    corporateRef: selection?.corporateRef || null,
-    corporateName: selection?.corporateName || null,
-    storeRef: selection?.storeRef || null,
-    storeName: selection?.storeName || null,
-    corpStoreKey: selection?.corpStoreKey || null,
-
-    currency: chargeData?.currency || 'usd',
-    subtotalCents: Number(chargeData?.subtotalCents || 0),
-    taxCents: Number(chargeData?.taxCents || 0),
-    albaFeeCents: Number(chargeData?.albaFeeCents || 0),
-    tipCents: Number(chargeData?.tipCents || 0),
-    totalCents: Number(chargeData?.totalCents || 0),
-
-    method:
-      receipt?.method || receipt?.paymentMethod || chargeData?.method || null,
-    paymentId: receipt?.paymentId || null,
-    chargeId: receipt?.chargeId || null,
-    brand: receipt?.brand || null,
-    last4: receipt?.last4 || null,
-
-    createdAt: Date.now(),
-    createdAtText: new Date().toLocaleString(),
-  };
-}
-
-function logTransactionPayload(payload, token) {
-  console.log('TX => about to send payload:', JSON.stringify(payload, null, 2));
-  console.log('TX => auth token:', maskToken(token));
-}
-
 export default function App() {
   const paymentRef = useRef(null);
   const startingCardRef = useRef(false);
 
-  // ✅ Boot gate prevents 1-second LOGIN flash
   const [booting, setBooting] = useState(true);
 
   const [screen, setScreen] = useState('LOGIN');
@@ -345,13 +296,11 @@ export default function App() {
   const [terminalStatusLine, setTerminalStatusLine] = useState('');
   const [stripeEnabled, setStripeEnabled] = useState(false);
 
-  // ✅ Theme toggle (light/dark)
   const [themeMode, setThemeMode] = useState('dark');
   const theme = useMemo(() => themes[themeMode] || themes.dark, [themeMode]);
 
-  const toggleTheme = () => {
+  const toggleTheme = () =>
     setThemeMode(m => (m === 'dark' ? 'light' : 'dark'));
-  };
 
   function go(next) {
     console.log('🧭 NAV =>', next);
@@ -391,13 +340,12 @@ export default function App() {
 
       return {ok: true, role: res?.user_role || ''};
     } catch (e) {
-      // If VerifyMe fails, we DO NOT brick the app — but we log loudly.
       console.log(`VerifyMe(${where}) error:`, e);
       return {ok: true, error: String(e?.message || e)};
     }
   }
 
-  // ✅ BOOT: decide initial screen before rendering app
+  // ✅ BOOT
   useEffect(() => {
     (async () => {
       try {
@@ -410,15 +358,10 @@ export default function App() {
         console.log('BOOT => token exists:', !!token);
         console.log('BOOT => selection:', sel);
 
-        // ✅ Autologin safety: clear comment on app start if token exists
-        if (token) {
-          await clearAgpayComment();
-        }
+        if (token) await clearAgpayComment();
 
-        // store session in state if present
         if (sess?.token) setSession({token: sess.token});
 
-        // ✅ NEW: verify role on boot if token exists (blocks banned accounts)
         if (token) {
           const gate = await gateVerifyOrLogout('BOOT');
           if (!gate.ok) {
@@ -427,19 +370,11 @@ export default function App() {
           }
         }
 
-        if (token && sel?.storeRef) {
-          console.log('BOOT => store already selected, going TERMINAL');
-          setScreen('TERMINAL');
-        } else if (token && (sel?.corporateId || sel?.corporateRef)) {
-          console.log('BOOT => corporate selected, going STORE');
+        if (token && sel?.storeRef) setScreen('TERMINAL');
+        else if (token && (sel?.corporateId || sel?.corporateRef))
           setScreen('STORE');
-        } else if (token) {
-          console.log('BOOT => token exists, going CORP');
-          setScreen('CORP');
-        } else {
-          console.log('BOOT => no token, going LOGIN');
-          setScreen('LOGIN');
-        }
+        else if (token) setScreen('CORP');
+        else setScreen('LOGIN');
       } catch (e) {
         console.log('BOOT => error:', e);
         setScreen('LOGIN');
@@ -466,23 +401,17 @@ export default function App() {
   // ---------- LOGIN ----------
   const handleLoginSuccess = async payload => {
     const token = payload?.token;
-    if (!token) {
-      Alert.alert('Login failed');
-      return;
-    }
+    if (!token) return Alert.alert('Login failed');
 
     setSession({token});
 
-    // ✅ NEW: verify immediately after login (before CORP)
     const gate = await gateVerifyOrLogout('LOGIN');
     if (!gate.ok) return;
 
     go('CORP');
   };
 
-  const handleLogout = () => {
-    hardLogoutToLogin();
-  };
+  const handleLogout = () => hardLogoutToLogin();
 
   // ---------- AMOUNT ----------
   const handleAmountDone = payload => {
@@ -511,7 +440,6 @@ export default function App() {
     const albaFeeCents = calcServiceFeeCents(baseBeforeTipCents);
     const totalCents = baseBeforeTipCents + albaFeeCents;
 
-    // ✅ Default to CARD (Checkout can still switch to CASH)
     setChargeData({
       method: 'CARD',
       currency: 'usd',
@@ -527,7 +455,6 @@ export default function App() {
   };
 
   // ---------- TIP ----------
-  // ✅ IMPORTANT: go to CHECKOUT (do NOT auto-start card)
   const handleTipDone = ({tipCents}) => {
     const prev = chargeData || {
       subtotalCents: 0,
@@ -548,14 +475,13 @@ export default function App() {
 
     setChargeData({
       ...prev,
-      method: 'CARD', // ✅ keep default preselected
+      method: 'CARD',
       tipCents: tip,
       albaFeeCents,
       totalCents,
       totalLabel: centsToMoney(totalCents),
     });
 
-    // ✅ Back to intended UX
     go('CHECKOUT');
   };
 
@@ -577,7 +503,6 @@ export default function App() {
     startingCardRef.current = true;
 
     try {
-      // ✅ optional: re-check role right before card payment
       const gate = await gateVerifyOrLogout('PRE_CARD');
       if (!gate.ok) return;
 
@@ -615,27 +540,11 @@ export default function App() {
     setTimeout(startCardFlowNow, 0);
   };
 
-  // ✅ Log exactly what we would send to transactions table (masked token)
   const handlePaymentSuccess = async receiptPayload => {
     try {
       setReceipt(receiptPayload);
-
-      const sess = await readAgpaySession();
-      const sel = await readAgpaySelection();
-      const token = await readAgpayAuthToken();
-
-      const txPayload = buildTransactionPayload({
-        session: sess,
-        selection: sel,
-        chargeData,
-        receipt: receiptPayload,
-      });
-
-      logTransactionPayload(txPayload, token);
-
-      // TODO: POST txPayload to your Transactions API when ready
     } catch (e) {
-      console.log('handlePaymentSuccess => logging error:', e);
+      console.log('handlePaymentSuccess error:', e);
     } finally {
       setStripeEnabled(false);
       setIsReaderBusy(false);
@@ -694,16 +603,16 @@ export default function App() {
           theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
-          readerStatus={readerStatus}
+          readerStatus={{connected: false, label: ''}}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
           terminalStatusLine={terminalStatusLine}
           onConnectReader={async () => {
-            // ✅ optional: re-check role before connecting reader
             const gate = await gateVerifyOrLogout('PRE_CONNECT_READER');
             if (!gate.ok) return;
 
             setStripeEnabled(true);
+
             const ready = await waitForPaymentRefReady();
             if (!ready) {
               Alert.alert('Preparing reader', 'Please try again in a moment.');
@@ -763,13 +672,11 @@ export default function App() {
 
     if (screen === 'CHECKOUT')
       return (
-        // inside your CHECKOUT render in App.js, add onCancel:
         <CheckoutScreen
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
           onCancel={async () => {
-            // cancel means: clear current txn state and go back to terminal
             setReceipt(null);
             setChargeData(null);
             setStripeEnabled(false);
@@ -790,76 +697,68 @@ export default function App() {
           receipt={receipt}
           onBack={() => go('CHECKOUT')}
           onResetTxn={() => {
-            // ✅ clears in-memory txn state (ReceiptScreen already clears Keychain comment)
             setReceipt(null);
             setChargeData(null);
             setStripeEnabled(false);
             setIsReaderBusy(false);
             setTerminalStatusLine('');
           }}
-          onDone={() => {
-            go('TERMINAL');
-          }}
+          onDone={() => go('TERMINAL')}
         />
       );
 
     return <View />;
   })();
 
-  // ✅ Floating toggle on screens EXCEPT CORP/STORE (to avoid collision w logout)
   const showFloatingToggle = screen !== 'CORP' && screen !== 'STORE';
 
-  const shouldMountStripe =
+  const shouldRenderPaymentTerminal =
     !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
   return (
-    <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
-      <StatusBar translucent backgroundColor="transparent" />
+    <StripeTerminalProvider
+      tokenProvider={terminalTokenProvider}
+      logLevel="verbose">
+      <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
+        <StatusBar translucent backgroundColor="transparent" />
 
-      {showFloatingToggle ? (
-        <TouchableOpacity
-          onPress={toggleTheme}
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: 10,
-            zIndex: 9999,
-            paddingVertical: 8,
-            paddingHorizontal: 10,
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: theme.border,
-            backgroundColor: theme.card,
-            opacity: 0.95,
-          }}>
-          <Text style={{color: theme.text, fontWeight: '900'}}>
-            {themeMode === 'dark' ? '☀️' : '🌙'}
-          </Text>
-        </TouchableOpacity>
-      ) : null}
+        {showFloatingToggle ? (
+          <TouchableOpacity
+            onPress={toggleTheme}
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              zIndex: 9999,
+              paddingVertical: 8,
+              paddingHorizontal: 10,
+              borderRadius: 999,
+              borderWidth: 1,
+              borderColor: theme.border,
+              backgroundColor: theme.card,
+              opacity: 0.95,
+            }}>
+            <Text style={{color: theme.text, fontWeight: '900'}}>
+              {themeMode === 'dark' ? '☀️' : '🌙'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
 
-      {content}
+        {content}
 
-      {shouldMountStripe ? (
-        <View
-          style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}
-          pointerEvents="none">
-          <StripeTerminalProvider
-            tokenProvider={tokenProvider}
-            logLevel="verbose">
-            <PaymentTerminal
-              ref={paymentRef}
-              amountCents={Number(chargeData?.totalCents || 0)}
-              currency={chargeData?.currency || 'usd'}
-              amountLabel={chargeData?.totalLabel || null}
-              breakdown={chargeData || null}
-              onReaderStatusChange={setReaderStatus}
-              onPaymentSuccess={handlePaymentSuccess}
-              onTerminalStatusLine={setTerminalStatusLine}
-            />
-          </StripeTerminalProvider>
-        </View>
-      ) : null}
-    </SafeAreaView>
+        {shouldRenderPaymentTerminal ? (
+          <PaymentTerminal
+            ref={paymentRef}
+            amountCents={Number(chargeData?.totalCents || 0)}
+            currency={chargeData?.currency || 'usd'}
+            amountLabel={chargeData?.totalLabel || null}
+            breakdown={chargeData || null}
+            onReaderStatusChange={() => {}}
+            onPaymentSuccess={handlePaymentSuccess}
+            onTerminalStatusLine={setTerminalStatusLine}
+          />
+        ) : null}
+      </SafeAreaView>
+    </StripeTerminalProvider>
   );
 }
