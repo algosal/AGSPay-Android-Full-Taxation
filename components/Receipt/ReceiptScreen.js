@@ -41,20 +41,12 @@ function nOr0(x) {
   return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * Safely resolve a cents field from:
- * - top-level receipt (preferred)
- * - receipt.breakdown (fallback)
- */
 function resolveCents(receipt, key) {
   const r = receipt || {};
   const b = r.breakdown || {};
   return nOr0(r[key] ?? b[key]);
 }
 
-/**
- * ✅ Builds receipt HTML (kept for later server-side emailing)
- */
 function buildReceiptHtml(receipt, copyLabel) {
   const r = receipt || {};
 
@@ -134,43 +126,23 @@ function buildReceiptHtml(receipt, copyLabel) {
         box-sizing: border-box;
       }
       .wrap { padding: 0 1.2mm; }
-
       .brand { text-align: center; margin-top: 6px; }
       .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
       .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
-
-      .copy {
-        text-align: center;
-        margin-top: 6px;
-        font-size: 13px;
-        font-weight: 900;
-        letter-spacing: 1px;
-        text-transform: uppercase;
-      }
-
+      .copy { text-align: center; margin-top: 6px; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; }
       .divider { border-top: 1px solid #000; margin: 8px 0; }
-
       .meta { font-size: 14px; margin: 2px 0; }
       .meta .k { opacity: 0.75; }
       .meta .v { font-weight: 900; }
-
       table { width: 100%; border-collapse: collapse; table-layout: fixed; }
       td { padding: 3px 0; vertical-align: top; overflow: hidden; }
       td.l { width: 60%; white-space: nowrap; text-overflow: ellipsis; }
       td.r { width: 40%; text-align: right; white-space: nowrap; font-weight: 900; }
-
-      .totalWrap {
-        border-top: 1px solid #000;
-        border-bottom: 1px solid #000;
-        padding: 6px 0;
-        margin-top: 6px;
-      }
+      .totalWrap { border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 6px 0; margin-top: 6px; }
       .totalRow { display: flex; justify-content: space-between; align-items: baseline; }
       .totalLabel { font-size: 16px; font-weight: 900; letter-spacing: 1px; }
       .totalValue { font-size: 22px; font-weight: 900; }
-
       .tiny { font-size: 12px; opacity: 0.9; margin-top: 6px; }
-
       .footer { text-align: center; margin-top: 10px; padding-bottom: 10px; }
       .thanks { font-weight: 900; letter-spacing: 1px; text-transform: uppercase; font-size: 14px; }
       .fine { font-size: 11px; opacity: 0.9; margin-top: 4px; }
@@ -275,11 +247,6 @@ async function readLastReceipt() {
   }
 }
 
-/**
- * ✅ IMPORTANT (Android):
- * setInternetCredentials() throws if username OR password is empty.
- * We clear by storing a single space, and readers must trim().
- */
 async function clearAgpayCommentFromKeychain() {
   try {
     await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
@@ -290,35 +257,10 @@ async function clearAgpayCommentFromKeychain() {
   }
 }
 
-// Basic email validation (good enough for UI)
 function isValidEmail(email) {
   const e = String(email || '').trim();
   if (!e) return false;
-  // Simple + practical
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-}
-
-// Try to prefill email from Keychain (best-effort)
-async function readAnyKnownEmail() {
-  try {
-    // some apps store login as generic password
-    const gp = await Keychain.getGenericPassword();
-    const maybeUser = gp?.username ? String(gp.username) : '';
-    if (isValidEmail(maybeUser)) return maybeUser;
-  } catch {}
-
-  try {
-    // or session json might have email
-    const internet = await Keychain.getInternetCredentials('agpayAuth');
-    if (internet?.password) {
-      const parsed = JSON.parse(internet.password);
-      const maybeEmail =
-        parsed?.email || parsed?.user_email || parsed?.username || '';
-      if (isValidEmail(maybeEmail)) return String(maybeEmail);
-    }
-  } catch {}
-
-  return '';
 }
 
 export default function ReceiptScreen({
@@ -330,7 +272,7 @@ export default function ReceiptScreen({
 }) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
   const [busy, setBusy] = useState(false);
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(''); // ✅ always blank
 
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -347,6 +289,9 @@ export default function ReceiptScreen({
   useEffect(() => {
     let mounted = true;
 
+    // ✅ Always start with blank email (customer enters it)
+    setEmail('');
+
     if (receipt) {
       setLocalReceipt(receipt);
     } else {
@@ -354,11 +299,6 @@ export default function ReceiptScreen({
         if (mounted && saved) setLocalReceipt(saved);
       });
     }
-
-    // Prefill email (best-effort)
-    readAnyKnownEmail().then(e => {
-      if (mounted && e) setEmail(e);
-    });
 
     return () => {
       mounted = false;
@@ -404,17 +344,11 @@ export default function ReceiptScreen({
 
       setBusy(true);
 
-      // Generate HTML for later backend use (client + vendor)
       const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
       const htmlVendor = buildReceiptHtml(localReceipt, "VENDOR'S COPY");
 
       console.log('📧 Email Receipt (stub) to:', to);
-      console.log('📧 Email Receipt (stub) total:', totalText);
-      console.log('📧 Email Receipt (stub) client length:', htmlClient.length);
-      console.log('📧 Email Receipt (stub) vendor length:', htmlVendor.length);
 
-      // ✅ OPTIONAL: attempt a stub POST (safe to fail)
-      // This is intentionally "coming soon" and should not block your flow.
       try {
         const payload = {
           to,
@@ -433,7 +367,6 @@ export default function ReceiptScreen({
           body: JSON.stringify(payload),
         });
 
-        // We do not care if it fails right now; it’s a stub.
         console.log('📧 Email stub HTTP:', resp.status);
       } catch (e) {
         console.log('📧 Email stub request failed (expected for now):', e);
@@ -441,7 +374,7 @@ export default function ReceiptScreen({
 
       Alert.alert(
         'Email Receipt (Coming Soon)',
-        `Email: ${to}\nTotal: ${totalText}\n\nReceipt emailing will be enabled soon. This confirms the email input + payload generation works.`,
+        `Email: ${to}\nTotal: ${totalText}\n\nReceipt emailing will be enabled soon.`,
       );
 
       await clearAgpayCommentFromKeychain();
@@ -483,7 +416,6 @@ export default function ReceiptScreen({
           </Pressable>
 
           <Text style={[styles.title, {color: t.text}]}>Receipt</Text>
-
           <View style={{width: 60}} />
         </View>
 
@@ -577,16 +509,8 @@ export default function ReceiptScreen({
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    padding: 16,
-    justifyContent: 'center',
-  },
-  card: {
-    borderRadius: 22,
-    padding: 18,
-    borderWidth: 1,
-  },
+  root: {flex: 1, padding: 16, justifyContent: 'center'},
+  card: {borderRadius: 22, padding: 18, borderWidth: 1},
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -594,7 +518,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {fontSize: 22, fontWeight: '800'},
-
   backBtn: {
     paddingVertical: 8,
     paddingHorizontal: 12,
@@ -602,19 +525,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   backText: {fontSize: 13, fontWeight: '900'},
-
   summaryBox: {
     borderWidth: 1,
     borderRadius: 14,
     padding: 12,
     marginTop: 8,
   },
-  summaryLine: {
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-
+  summaryLine: {fontSize: 13, fontWeight: '800', marginBottom: 6},
   emailBox: {
     marginTop: 12,
     borderWidth: 1,
@@ -622,7 +539,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-
   primaryBtn: {
     marginTop: 14,
     borderRadius: 14,
@@ -632,7 +548,6 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   primaryText: {fontSize: 16, fontWeight: '900'},
-
   doneBtn: {
     marginTop: 12,
     borderRadius: 14,
@@ -641,6 +556,5 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   doneText: {fontSize: 16, fontWeight: '900'},
-
   note: {marginTop: 10, fontSize: 12, fontWeight: '700', textAlign: 'center'},
 });
