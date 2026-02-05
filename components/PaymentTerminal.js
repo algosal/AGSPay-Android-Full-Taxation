@@ -46,14 +46,13 @@ async function readAgpayAuthToken() {
     const creds = await Keychain.getInternetCredentials('agpayAuth');
     if (!creds?.password) return null;
     const parsed = JSON.parse(creds.password);
-    return parsed?.token || null; // raw JWT
+    return parsed?.token || null;
   } catch (e) {
     console.log('readAgpayAuthToken error:', e);
     return null;
   }
 }
 
-// ✅ read the comment saved from TerminalScreen (agpayComment)
 async function readAgpayComment() {
   try {
     const creds = await Keychain.getInternetCredentials('agpayComment');
@@ -65,7 +64,6 @@ async function readAgpayComment() {
   }
 }
 
-// ✅ clear comment after transaction completes
 async function clearAgpayComment() {
   try {
     await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
@@ -76,7 +74,6 @@ async function clearAgpayComment() {
   }
 }
 
-// ✅ Stripe metadata values should be strings.
 function toStripeMetadata(obj) {
   const out = {};
   try {
@@ -94,19 +91,12 @@ function toStripeMetadata(obj) {
   return out;
 }
 
-/**
- * Build a Stripe PaymentIntent.description that helps segregation in Stripe:
- * "Alba Gold Systems — <Corporate> / <Store> — <optional comment>"
- *
- * We keep it short(ish) and safe.
- */
 function buildStripeDescription({corporateName, storeName, comment}) {
   const corp = String(corporateName || '').trim();
   const store = String(storeName || '').trim();
   const cmt = String(comment || '').trim();
 
   const parts = [];
-  // branding prefix is optional, but helps in Stripe searches
   parts.push('Alba Gold Systems');
 
   if (corp || store) {
@@ -119,15 +109,9 @@ function buildStripeDescription({corporateName, storeName, comment}) {
 
   if (cmt) parts.push(cmt.replace(/\s+/g, ' ').trim());
 
-  // Stripe description max is 255 chars; enforce to be safe
   return parts.join(' — ').slice(0, 255);
 }
 
-/**
- * Frontend-only fix:
- * - Lambda returns: { statusCode, body: "{\"client_secret\":\"...\"}" }
- * - We parse deterministically and fail loudly if parsing is the issue.
- */
 async function createIntentOnBackend({
   amountCents,
   currency,
@@ -196,7 +180,7 @@ async function createIntentOnBackend({
 
   if (!clientSecret) {
     throw new Error(
-      `Missing client_secret. HTTP ${resp.status}. outer=${JSON.stringify(
+      `Missing client_secret. outer=${JSON.stringify(
         outer,
       )} data=${JSON.stringify(data)}`,
     );
@@ -255,12 +239,14 @@ const PaymentTerminal = forwardRef(
       },
     });
 
-    const [terminalReady, setTerminalReady] = useState(false);
     const [statusLine, setStatusLine] = useState('Not initialized');
 
     const latestReadersRef = useRef([]);
     const tapToPaySupportedRef = useRef(null);
     const connectedReaderRef = useRef(null);
+
+    const terminalReadyRef = useRef(false);
+    const initPromiseRef = useRef(null);
     const connectingRef = useRef(false);
 
     useEffect(() => {
@@ -285,53 +271,77 @@ const PaymentTerminal = forwardRef(
     );
 
     const ensureInit = useCallback(async () => {
-      if (terminalReady) return true;
+      if (terminalReadyRef.current) return true;
+      if (initPromiseRef.current) return initPromiseRef.current;
 
-      console.log('Alba Terminal → initialize() start');
-      setStatusLine('Initializing Alba Gold Systems Terminal…');
+      initPromiseRef.current = (async () => {
+        console.log('Alba Terminal → initialize() start');
+        console.log('📱 Platform:', Platform.OS);
+        setStatusLine('Initializing Alba Gold Systems Terminal…');
 
-      const res = await initialize();
-      console.log('Alba Terminal → initialize() result:', res);
+        let res;
+        try {
+          res = await Promise.race([
+            initialize(),
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error('initialize() timed out after 12s')),
+                12000,
+              ),
+            ),
+          ]);
+        } catch (e) {
+          console.log('❌ initialize() timeout/error:', e);
+          setStatusLine(`Init failed: ${String(e?.message || e)}`);
+          throw e;
+        }
 
-      if (res?.error) {
-        setStatusLine(`Init failed: ${res.error?.message || res.error?.code}`);
-        throw new Error(
-          res.error?.message || 'Stripe Terminal initialize failed',
-        );
-      }
+        console.log('Alba Terminal → initialize() result:', res);
+
+        if (res?.error) {
+          setStatusLine(
+            `Init failed: ${res.error?.message || res.error?.code}`,
+          );
+          throw new Error(
+            res.error?.message || 'Stripe Terminal initialize failed',
+          );
+        }
+
+        try {
+          await setTapToPayUxConfiguration({
+            tapZone: {
+              tapZoneIndicator: TapZoneIndicator.FRONT,
+              tapZonePosition: {xBias: 0.5, yBias: 0.3},
+            },
+            darkMode: DarkMode.DARK,
+          });
+        } catch (e) {
+          console.log('setTapToPayUxConfiguration error:', e);
+        }
+
+        try {
+          const r = await supportsReadersOfType({
+            deviceType: 'tapToPay',
+            discoveryMethod: 'tapToPay',
+          });
+          tapToPaySupportedRef.current = r?.supported ?? null;
+          console.log('supportsReadersOfType(tapToPay):', r);
+        } catch (e) {
+          console.log('supportsReadersOfType error:', e);
+          tapToPaySupportedRef.current = null;
+        }
+
+        terminalReadyRef.current = true;
+        setStatusLine('Initialized');
+        return true;
+      })();
 
       try {
-        await setTapToPayUxConfiguration({
-          tapZone: {
-            tapZoneIndicator: TapZoneIndicator.FRONT,
-            tapZonePosition: {xBias: 0.5, yBias: 0.3},
-          },
-          darkMode: DarkMode.DARK,
-        });
-      } catch (e) {
-        console.log('setTapToPayUxConfiguration error:', e);
+        return await initPromiseRef.current;
+      } finally {
+        initPromiseRef.current = null;
       }
-
-      try {
-        const r = await supportsReadersOfType({
-          deviceType: 'tapToPay',
-          discoveryMethod: 'tapToPay',
-        });
-        tapToPaySupportedRef.current = r?.supported ?? null;
-      } catch (e) {
-        console.log('supportsReadersOfType error:', e);
-        tapToPaySupportedRef.current = null;
-      }
-
-      setTerminalReady(true);
-      setStatusLine('Initialized');
-      return true;
-    }, [
-      initialize,
-      setTapToPayUxConfiguration,
-      supportsReadersOfType,
-      terminalReady,
-    ]);
+    }, [initialize, setTapToPayUxConfiguration, supportsReadersOfType]);
 
     async function waitForReaders({timeoutMs = 6500, intervalMs = 250} = {}) {
       const start = Date.now();
@@ -353,6 +363,32 @@ const PaymentTerminal = forwardRef(
         await new Promise(r => setTimeout(r, intervalMs));
       }
       return null;
+    }
+
+    async function discoverWithTimeout(timeoutMs = 9000) {
+      const discPromise = (async () => {
+        const out = await discoverReaders({
+          discoveryMethod: 'tapToPay',
+          simulated: false,
+        });
+        return out;
+      })();
+
+      const timeoutPromise = new Promise(resolve =>
+        setTimeout(() => resolve({__timeout: true}), timeoutMs),
+      );
+
+      const res = await Promise.race([discPromise, timeoutPromise]);
+
+      if (res && res.__timeout) {
+        console.log('⏱️ discoverReaders timed out — cancelDiscovering()');
+        try {
+          await cancelDiscovering();
+        } catch {}
+        throw new Error('Discover readers timed out. Try again.');
+      }
+
+      return res;
     }
 
     const connectReaderFlow = useCallback(async () => {
@@ -394,7 +430,7 @@ const PaymentTerminal = forwardRef(
         if (!LOCATION_ID || !String(LOCATION_ID).startsWith('tml_')) {
           Alert.alert(
             'Location ID missing',
-            'LIVE_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+            'TERMINAL_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
           );
           return false;
         }
@@ -405,17 +441,15 @@ const PaymentTerminal = forwardRef(
 
         setStatusLine('Discovering Tap to Pay…');
 
-        const {error: discErr} = await discoverReaders({
-          discoveryMethod: 'tapToPay',
-          simulated: false,
-        });
+        console.log('🔎 discoverReaders(tapToPay) starting…');
+        const disc = await discoverWithTimeout(9000);
 
-        if (discErr) {
-          console.log('discoverReaders error:', discErr);
-          throw new Error(discErr?.message || 'discoverReaders failed');
+        if (disc?.error) {
+          console.log('discoverReaders error:', disc.error);
+          throw new Error(disc.error?.message || 'discoverReaders failed');
         }
 
-        const readers = await waitForReaders();
+        const readers = await waitForReaders({timeoutMs: 6500});
         console.log('✅ discovered tapToPay readers (waited):', readers);
 
         const chosen = readers.find(r => !r?.simulated) || readers[0];
@@ -429,9 +463,6 @@ const PaymentTerminal = forwardRef(
           );
           return false;
         }
-
-        if (chosen?.simulated)
-          console.log('🧪 Using simulated Tap to Pay reader');
 
         setStatusLine('Connecting Tap to Pay…');
         console.log('📍 Stripe Terminal locationId in use:', LOCATION_ID);
@@ -447,21 +478,12 @@ const PaymentTerminal = forwardRef(
         }
 
         const cr = await waitForConnectedReader();
-        if (!cr) {
-          setStatusLine('Connected, but state not ready');
-          publishReaderStatus({
-            connected: true,
-            label:
-              chosen?.label || chosen?.serialNumber || 'Tap to Pay Connected',
-          });
-          return true;
-        }
-
         setStatusLine('Reader connected');
         publishReaderStatus({
           connected: true,
           label: cr?.label || cr?.serialNumber || 'Tap to Pay Connected',
         });
+
         return true;
       } catch (e) {
         console.log('connectReaderFlow error:', e);
@@ -525,18 +547,15 @@ const PaymentTerminal = forwardRef(
 
         const selection = await readAgpaySelection();
 
-        // ✅ Read comment saved from TerminalScreen
         const uiCommentRaw = await readAgpayComment();
         const uiComment = String(uiCommentRaw || '').trim();
 
-        // ✅ NEW: build a Stripe description that includes corp/store (+ comment)
         const stripeDescription = buildStripeDescription({
           corporateName: selection?.corporateName || '',
           storeName: selection?.storeName || '',
           comment: uiComment || '',
         });
 
-        // ✅ metadata (strings only)
         const baseMeta = {
           corporateRef: selection?.corporateRef || '',
           corporateName: selection?.corporateName || '',
@@ -548,142 +567,35 @@ const PaymentTerminal = forwardRef(
 
         const meta = toStripeMetadata(baseMeta);
 
-        const {clientSecret, raw} = await createIntentOnBackend({
+        const {clientSecret} = await createIntentOnBackend({
           amountCents: amt,
           currency,
           metadata: meta,
-          // ✅ send corp/store description (instead of only comment)
           description: stripeDescription,
         });
 
         setStatusLine('Retrieving intent…');
         const retrieved = await retrievePaymentIntent(clientSecret);
-        if (retrieved?.error) {
+        if (retrieved?.error)
           throw new Error(retrieved.error?.message || 'Retrieve intent failed');
-        }
 
         setStatusLine('Tap card now…');
         const collected = await collectPaymentMethod({
           paymentIntent: retrieved?.paymentIntent,
         });
-        if (collected?.error) {
-          throw new Error(
-            collected.error?.message || 'Collect payment method failed',
-          );
-        }
+        if (collected?.error)
+          throw new Error(collected.error?.message || 'Collect failed');
 
         setStatusLine('Processing…');
         const confirmed = await confirmPaymentIntent({
           paymentIntent: collected?.paymentIntent,
         });
-        if (confirmed?.error) {
-          throw new Error(confirmed.error?.message || 'Confirm payment failed');
-        }
+        if (confirmed?.error)
+          throw new Error(confirmed.error?.message || 'Confirm failed');
 
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
-        const jwt = await readAgpayAuthToken();
-
-        const firstCharge =
-          Array.isArray(pi?.charges) && pi.charges.length
-            ? pi.charges[0]
-            : null;
-
-        const cardPresent =
-          firstCharge?.paymentMethodDetails?.cardPresentDetails || null;
-
-        const stripeObj = {
-          paymentIntentId: pi?.id || null,
-          status: pi?.status || null,
-          amount: pi?.amount || amt,
-          currency: pi?.currency || currency || 'usd',
-          paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
-          chargeId: firstCharge?.id || null,
-          brand: cardPresent?.brand || null,
-          last4: cardPresent?.last4 || null,
-        };
-
-        const derivedDebugMeta = {
-          subtotalInput:
-            debugMeta?.subtotalInput ??
-            (breakdown?.subtotalCents != null
-              ? String((Number(breakdown.subtotalCents) / 100).toFixed(2))
-              : ''),
-          subtotalCents: Number(
-            debugMeta?.subtotalCents ?? breakdown?.subtotalCents ?? 0,
-          ),
-          taxRate: Number(
-            debugMeta?.taxRate ??
-              (breakdown?.subtotalCents
-                ? Number(breakdown?.taxCents || 0) /
-                  Number(breakdown.subtotalCents)
-                : 0),
-          ),
-          taxCents: Number(debugMeta?.taxCents ?? breakdown?.taxCents ?? 0),
-          serviceFeeCents: Number(
-            debugMeta?.serviceFeeCents ??
-              breakdown?.albaFeeCents ??
-              breakdown?.serviceFeeCents ??
-              0,
-          ),
-          tipCents: Number(debugMeta?.tipCents ?? breakdown?.tipCents ?? 0),
-          note: uiComment || debugMeta?.note || '',
-        };
-
-        const vendioPayload = {
-          corporateRef: selection?.corporateRef || '',
-          corporateName: selection?.corporateName || '',
-          storeRef: selection?.storeRef || '',
-          storeName: selection?.storeName || '',
-
-          totalCents: amt,
-          tipCents: Number(derivedDebugMeta?.tipCents ?? 0),
-
-          stripe: stripeObj,
-          stripeReturnedObject: JSON.stringify(pi || raw || {}),
-          amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
-          debugMeta: derivedDebugMeta,
-
-          // keep both for your own audit/segregation
-          descriptionSentToStripe: stripeDescription,
-          metadataSentToStripe: meta,
-
-          clientEpochMs: Date.now(),
-        };
-
-        const VENDIO_TX_URL =
-          'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
-
-        console.log('TX => about to send payload:', vendioPayload);
-        console.log(
-          'TX => auth token:',
-          jwt ? `${jwt.slice(0, 10)}…` : '(missing)',
-        );
-
-        const resp = await fetch(VENDIO_TX_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(jwt ? {Authorization: jwt} : {}),
-          },
-          body: JSON.stringify(vendioPayload),
-        });
-
-        const respText = await resp.text();
-        console.log(
-          'TX => VendioTransactions response:',
-          resp.status,
-          respText,
-        );
-
-        if (!resp.ok) {
-          throw new Error(
-            `VendioTransactions failed: HTTP ${resp.status}. Body: ${respText}`,
-          );
-        }
-
-        // ✅ Clear comment for the next transaction
         await clearAgpayComment();
 
         onPaymentSuccess?.({
@@ -696,14 +608,13 @@ const PaymentTerminal = forwardRef(
           grandTotalCents: amt,
           breakdown: breakdown || null,
           stripe: {
-            paymentIntentId: stripeObj.paymentIntentId,
-            status: stripeObj.status,
-            amount: stripeObj.amount,
-            currency: stripeObj.currency,
-            paymentMethodId: stripeObj.paymentMethodId,
-            chargeId: stripeObj.chargeId,
+            paymentIntentId: pi?.id || null,
+            status: pi?.status || null,
+            amount: pi?.amount || amt,
+            currency: pi?.currency || currency || 'usd',
+            paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
           },
-          stripeReturnedObject: vendioPayload.stripeReturnedObject,
+          stripeReturnedObject: JSON.stringify(pi || {}),
           createdAtText: new Date().toLocaleString(),
         });
       } catch (e) {
