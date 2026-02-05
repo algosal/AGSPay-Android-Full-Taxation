@@ -42,9 +42,9 @@ function resolveCents(receipt, key) {
 }
 
 /**
- * ✅ NEW: build HTML with a copy label ("CLIENT COPY" / "VENDOR'S COPY")
+ * ✅ NEW: builds HTML with a copy label (Client/Vendor/etc)
  */
-function buildReceiptHtml(receipt, copyLabel = '') {
+function buildReceiptHtml(receipt, copyLabel) {
   const r = receipt || {};
 
   const totalCents =
@@ -104,7 +104,7 @@ function buildReceiptHtml(receipt, copyLabel = '') {
     )
     .join('');
 
-  const copy = String(copyLabel || '').trim();
+  const safeCopy = String(copyLabel || '').trim();
 
   return `
   <html>
@@ -128,10 +128,10 @@ function buildReceiptHtml(receipt, copyLabel = '') {
       .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
       .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
 
-      .copyTag {
-        margin-top: 6px;
+      .copy {
         text-align: center;
-        font-size: 14px;
+        margin-top: 6px;
+        font-size: 13px;
         font-weight: 900;
         letter-spacing: 1px;
         text-transform: uppercase;
@@ -172,7 +172,7 @@ function buildReceiptHtml(receipt, copyLabel = '') {
         <div class="sub">RECEIPT</div>
       </div>
 
-      ${copy ? `<div class="copyTag">${escapeHtml(copy)}</div>` : ''}
+      ${safeCopy ? `<div class="copy">${escapeHtml(safeCopy)}</div>` : ''}
 
       <div class="divider"></div>
 
@@ -293,6 +293,7 @@ export default function ReceiptScreen({
   onResetTxn,
 }) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
+  const [printing, setPrinting] = useState(false);
 
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -323,36 +324,90 @@ export default function ReceiptScreen({
     };
   }, [receipt]);
 
+  const methodUpper = useMemo(() => {
+    const m =
+      localReceipt?.method ||
+      localReceipt?.paymentMethod ||
+      receipt?.method ||
+      receipt?.paymentMethod ||
+      '';
+    return String(m || '').toUpperCase();
+  }, [localReceipt, receipt]);
+
   /**
-   * ✅ NEW:
-   * Print TWO receipts:
-   *  - Client Copy
-   *  - Vendor's Copy
-   * With a 2s delay between them.
+   * ✅ RULES:
+   * - CARD: print 2 automatically (Client then Vendor)
+   * - CASH: print 1 (default), optional extra
    */
+  const printCardTwoCopies = useCallback(async r => {
+    const htmlClient = buildReceiptHtml(r, 'CLIENT COPY');
+    await RNPrint.print({html: htmlClient});
+
+    await sleep(2000);
+
+    const htmlVendor = buildReceiptHtml(r, "VENDOR'S COPY");
+    await RNPrint.print({html: htmlVendor});
+  }, []);
+
+  const printSingleCopy = useCallback(async (r, label) => {
+    const html = buildReceiptHtml(r, label || '');
+    await RNPrint.print({html});
+  }, []);
+
   const handlePrint = useCallback(async () => {
     try {
+      if (printing) return;
       if (!localReceipt) {
         Alert.alert('No receipt', 'Receipt data is not available yet.');
         return;
       }
 
-      const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
-      await RNPrint.print({html: htmlClient});
+      setPrinting(true);
 
-      // 2-second delay
-      await sleep(2000);
+      if (methodUpper === 'CARD') {
+        await printCardTwoCopies(localReceipt);
+      } else {
+        // CASH (or unknown): print 1 only
+        await printSingleCopy(localReceipt, 'CLIENT COPY');
+      }
 
-      const htmlVendor = buildReceiptHtml(localReceipt, "VENDOR'S COPY");
-      await RNPrint.print({html: htmlVendor});
-
-      // ✅ clear comment after successful prints too
+      // clear comment after successful print
       await clearAgpayCommentFromKeychain();
     } catch (e) {
       console.log('PRINT error:', e);
       Alert.alert('Print failed', String(e?.message || e));
+    } finally {
+      setPrinting(false);
     }
-  }, [localReceipt]);
+  }, [
+    localReceipt,
+    methodUpper,
+    printCardTwoCopies,
+    printSingleCopy,
+    printing,
+  ]);
+
+  const handlePrintExtra = useCallback(async () => {
+    try {
+      if (printing) return;
+      if (!localReceipt) {
+        Alert.alert('No receipt', 'Receipt data is not available yet.');
+        return;
+      }
+
+      setPrinting(true);
+
+      // Extra copy for CASH (vendor copy)
+      await printSingleCopy(localReceipt, "VENDOR'S COPY");
+
+      await clearAgpayCommentFromKeychain();
+    } catch (e) {
+      console.log('PRINT EXTRA error:', e);
+      Alert.alert('Print failed', String(e?.message || e));
+    } finally {
+      setPrinting(false);
+    }
+  }, [localReceipt, printSingleCopy, printing]);
 
   const handleBack = useCallback(() => {
     if (typeof onBack === 'function') return onBack();
@@ -364,6 +419,8 @@ export default function ReceiptScreen({
     onResetTxn?.();
     onDone?.();
   }, [onDone, onResetTxn]);
+
+  const showExtraCopyButton = methodUpper !== 'CARD'; // CASH gets optional extra
 
   return (
     <View style={[styles.root, {backgroundColor: t.bg}]}>
@@ -388,16 +445,39 @@ export default function ReceiptScreen({
 
         <Pressable
           onPress={handlePrint}
+          disabled={printing}
           {...androidRipple('rgba(250,204,21,0.10)')}
           style={({pressed}) => [
             styles.printBtn,
             {backgroundColor: t.inputBg, borderColor: t.border},
+            printing ? {opacity: 0.6} : null,
             pressFX({pressed}),
           ]}>
           <Text style={[styles.printText, {color: t.gold}]}>
-            Print (Client + Vendor)
+            {printing
+              ? 'Printing…'
+              : methodUpper === 'CARD'
+              ? 'Print (2 Copies)'
+              : 'Print (1 Copy)'}
           </Text>
         </Pressable>
+
+        {showExtraCopyButton ? (
+          <Pressable
+            onPress={handlePrintExtra}
+            disabled={printing}
+            {...androidRipple('rgba(250,204,21,0.10)')}
+            style={({pressed}) => [
+              styles.extraBtn,
+              {backgroundColor: t.inputBg, borderColor: t.border},
+              printing ? {opacity: 0.6} : null,
+              pressFX({pressed}),
+            ]}>
+            <Text style={[styles.extraText, {color: t.text}]}>
+              Print Extra Copy
+            </Text>
+          </Pressable>
+        ) : null}
 
         <Pressable
           onPress={handleDone}
@@ -411,7 +491,7 @@ export default function ReceiptScreen({
         </Pressable>
 
         <Text style={[styles.note, {color: t.muted}]}>
-          Prints two 58mm receipts (2 seconds apart).
+          Receipt prints on a 58mm roll printer.
         </Text>
       </View>
     </View>
@@ -454,6 +534,16 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   printText: {fontSize: 16, fontWeight: '900'},
+
+  extraBtn: {
+    marginTop: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    width: '100%',
+  },
+  extraText: {fontSize: 14, fontWeight: '900'},
 
   doneBtn: {
     marginTop: 12,
