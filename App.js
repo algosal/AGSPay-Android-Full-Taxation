@@ -36,9 +36,18 @@ const VERIFY_ME_URL =
 // --- Tax/Fee constants (NYC) ---
 const TAX_RATE = 0.0885; // 8.85%
 
+function safeJsonParse(x) {
+  try {
+    return JSON.parse(String(x || '').trim());
+  } catch {
+    return null;
+  }
+}
+
 /**
- * ✅ StripeTerminalProvider requires:
- * tokenProvider = { fetchConnectionToken: async () => string }
+ * ✅ StripeTerminalProvider expects:
+ * tokenProvider = async () => string
+ * NOT an object.
  */
 async function fetchConnectionToken() {
   console.log('🔥 tokenProvider CALLED (about to fetch connection token)');
@@ -51,32 +60,34 @@ async function fetchConnectionToken() {
 
   if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
 
-  let data = {};
-  try {
-    data = JSON.parse(String(text || '').trim());
-  } catch {
-    data = {};
+  // supports both:
+  // 1) { secret: "..." }
+  // 2) { body: "{\"secret\":\"...\"}" }
+  // 3) { body: { secret: "..." } }
+  let outer = safeJsonParse(text);
+  if (!outer) outer = {};
+
+  let data = outer;
+  if (outer?.body && typeof outer.body === 'string') {
+    const inner = safeJsonParse(outer.body);
+    if (inner) data = inner;
+  } else if (outer?.body && typeof outer.body === 'object') {
+    data = outer.body;
   }
 
-  // supports both {secret:"..."} and {body:"{secret:'...'}"}
-  let secret = data?.secret || null;
-  if (!secret && typeof data?.body === 'string') {
-    try {
-      secret = JSON.parse(data.body)?.secret || null;
-    } catch {}
-  }
+  const secret = data?.secret || null;
 
   if (!secret || typeof secret !== 'string') {
-    throw new Error('Missing connection token');
+    throw new Error(
+      `Missing connection token. outer=${JSON.stringify(
+        outer,
+      )} data=${JSON.stringify(data)}`,
+    );
   }
 
   console.log('✅ connection token length:', secret.length);
   return secret;
 }
-
-const terminalTokenProvider = {
-  fetchConnectionToken,
-};
 
 function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
@@ -249,20 +260,13 @@ async function verifyUserRoleByPk(pk) {
     throw new Error(`VerifyMe failed. HTTP ${resp?.status || 'NO_RESP'}`);
   }
 
-  let outer = null;
-  try {
-    outer = JSON.parse(String(text || '').trim());
-  } catch {
-    outer = null;
-  }
+  let outer = safeJsonParse(text);
+  if (!outer) outer = null;
 
   let data = outer;
   if (outer && typeof outer.body === 'string') {
-    try {
-      data = JSON.parse(outer.body);
-    } catch {
-      data = outer;
-    }
+    const inner = safeJsonParse(outer.body);
+    data = inner || outer;
   }
 
   const role =
@@ -717,7 +721,7 @@ export default function App() {
 
   return (
     <StripeTerminalProvider
-      tokenProvider={terminalTokenProvider}
+      tokenProvider={fetchConnectionToken}
       logLevel="verbose">
       <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
         <StatusBar translucent backgroundColor="transparent" />

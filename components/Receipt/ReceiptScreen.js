@@ -1,11 +1,22 @@
 ﻿// FILE: components/Receipt/ReceiptScreen.js
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {View, Text, Pressable, StyleSheet, Alert} from 'react-native';
-import RNPrint from 'react-native-print';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Alert,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import {pressFX, androidRipple} from '../ui/pressFX';
 
 const GOLD = '#d4af37';
+
+// ✅ Stub URL for now (replace later with real API)
+const EMAIL_RECEIPT_URL = 'https://example.com/coming-soon-email-receipt';
 
 function escapeHtml(input) {
   return String(input ?? '')
@@ -42,7 +53,7 @@ function resolveCents(receipt, key) {
 }
 
 /**
- * ✅ NEW: builds HTML with a copy label (Client/Vendor/etc)
+ * ✅ Builds receipt HTML (kept for later server-side emailing)
  */
 function buildReceiptHtml(receipt, copyLabel) {
   const r = receipt || {};
@@ -268,8 +279,6 @@ async function readLastReceipt() {
  * ✅ IMPORTANT (Android):
  * setInternetCredentials() throws if username OR password is empty.
  * We clear by storing a single space, and readers must trim().
- *
- * This ONLY touches service: 'agpayComment' (NOT 'agpaySelection').
  */
 async function clearAgpayCommentFromKeychain() {
   try {
@@ -281,8 +290,35 @@ async function clearAgpayCommentFromKeychain() {
   }
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+// Basic email validation (good enough for UI)
+function isValidEmail(email) {
+  const e = String(email || '').trim();
+  if (!e) return false;
+  // Simple + practical
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+// Try to prefill email from Keychain (best-effort)
+async function readAnyKnownEmail() {
+  try {
+    // some apps store login as generic password
+    const gp = await Keychain.getGenericPassword();
+    const maybeUser = gp?.username ? String(gp.username) : '';
+    if (isValidEmail(maybeUser)) return maybeUser;
+  } catch {}
+
+  try {
+    // or session json might have email
+    const internet = await Keychain.getInternetCredentials('agpayAuth');
+    if (internet?.password) {
+      const parsed = JSON.parse(internet.password);
+      const maybeEmail =
+        parsed?.email || parsed?.user_email || parsed?.username || '';
+      if (isValidEmail(maybeEmail)) return String(maybeEmail);
+    }
+  } catch {}
+
+  return '';
 }
 
 export default function ReceiptScreen({
@@ -293,7 +329,8 @@ export default function ReceiptScreen({
   onResetTxn,
 }) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
-  const [printing, setPrinting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState('');
 
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -312,11 +349,15 @@ export default function ReceiptScreen({
 
     if (receipt) {
       setLocalReceipt(receipt);
-      return;
+    } else {
+      readLastReceipt().then(saved => {
+        if (mounted && saved) setLocalReceipt(saved);
+      });
     }
 
-    readLastReceipt().then(saved => {
-      if (mounted && saved) setLocalReceipt(saved);
+    // Prefill email (best-effort)
+    readAnyKnownEmail().then(e => {
+      if (mounted && e) setEmail(e);
     });
 
     return () => {
@@ -334,80 +375,83 @@ export default function ReceiptScreen({
     return String(m || '').toUpperCase();
   }, [localReceipt, receipt]);
 
-  /**
-   * ✅ RULES:
-   * - CARD: print 2 automatically (Client then Vendor)
-   * - CASH: print 1 (default), optional extra
-   */
-  const printCardTwoCopies = useCallback(async r => {
-    const htmlClient = buildReceiptHtml(r, 'CLIENT COPY');
-    await RNPrint.print({html: htmlClient});
+  const totalCents =
+    Number(localReceipt?.totalCents) ||
+    Number(localReceipt?.grandTotalCents) ||
+    Number(localReceipt?.amountCents) ||
+    Number(localReceipt?.breakdown?.totalCents) ||
+    0;
 
-    await sleep(2000);
+  const totalText =
+    localReceipt?.totalLabel ||
+    localReceipt?.amountText ||
+    money(totalCents) ||
+    '$0.00';
 
-    const htmlVendor = buildReceiptHtml(r, "VENDOR'S COPY");
-    await RNPrint.print({html: htmlVendor});
-  }, []);
-
-  const printSingleCopy = useCallback(async (r, label) => {
-    const html = buildReceiptHtml(r, label || '');
-    await RNPrint.print({html});
-  }, []);
-
-  const handlePrint = useCallback(async () => {
+  const handleEmailReceipt = useCallback(async () => {
     try {
-      if (printing) return;
+      if (busy) return;
       if (!localReceipt) {
         Alert.alert('No receipt', 'Receipt data is not available yet.');
         return;
       }
 
-      setPrinting(true);
-
-      if (methodUpper === 'CARD') {
-        await printCardTwoCopies(localReceipt);
-      } else {
-        // CASH (or unknown): print 1 only
-        await printSingleCopy(localReceipt, 'CLIENT COPY');
-      }
-
-      // clear comment after successful print
-      await clearAgpayCommentFromKeychain();
-    } catch (e) {
-      console.log('PRINT error:', e);
-      Alert.alert('Print failed', String(e?.message || e));
-    } finally {
-      setPrinting(false);
-    }
-  }, [
-    localReceipt,
-    methodUpper,
-    printCardTwoCopies,
-    printSingleCopy,
-    printing,
-  ]);
-
-  const handlePrintExtra = useCallback(async () => {
-    try {
-      if (printing) return;
-      if (!localReceipt) {
-        Alert.alert('No receipt', 'Receipt data is not available yet.');
+      const to = String(email || '').trim();
+      if (!isValidEmail(to)) {
+        Alert.alert('Invalid email', 'Please enter a valid email address.');
         return;
       }
 
-      setPrinting(true);
+      setBusy(true);
 
-      // Extra copy for CASH (vendor copy)
-      await printSingleCopy(localReceipt, "VENDOR'S COPY");
+      // Generate HTML for later backend use (client + vendor)
+      const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
+      const htmlVendor = buildReceiptHtml(localReceipt, "VENDOR'S COPY");
+
+      console.log('📧 Email Receipt (stub) to:', to);
+      console.log('📧 Email Receipt (stub) total:', totalText);
+      console.log('📧 Email Receipt (stub) client length:', htmlClient.length);
+      console.log('📧 Email Receipt (stub) vendor length:', htmlVendor.length);
+
+      // ✅ OPTIONAL: attempt a stub POST (safe to fail)
+      // This is intentionally "coming soon" and should not block your flow.
+      try {
+        const payload = {
+          to,
+          createdAtText: localReceipt?.createdAtText || '',
+          totalCents,
+          totalText,
+          method: methodUpper,
+          receipt: localReceipt,
+          htmlClient,
+          htmlVendor,
+        };
+
+        const resp = await fetch(EMAIL_RECEIPT_URL, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+
+        // We do not care if it fails right now; it’s a stub.
+        console.log('📧 Email stub HTTP:', resp.status);
+      } catch (e) {
+        console.log('📧 Email stub request failed (expected for now):', e);
+      }
+
+      Alert.alert(
+        'Email Receipt (Coming Soon)',
+        `Email: ${to}\nTotal: ${totalText}\n\nReceipt emailing will be enabled soon. This confirms the email input + payload generation works.`,
+      );
 
       await clearAgpayCommentFromKeychain();
     } catch (e) {
-      console.log('PRINT EXTRA error:', e);
-      Alert.alert('Print failed', String(e?.message || e));
+      console.log('EMAIL RECEIPT error:', e);
+      Alert.alert('Email failed', String(e?.message || e));
     } finally {
-      setPrinting(false);
+      setBusy(false);
     }
-  }, [localReceipt, printSingleCopy, printing]);
+  }, [busy, email, localReceipt, methodUpper, totalCents, totalText]);
 
   const handleBack = useCallback(() => {
     if (typeof onBack === 'function') return onBack();
@@ -420,10 +464,10 @@ export default function ReceiptScreen({
     onDone?.();
   }, [onDone, onResetTxn]);
 
-  const showExtraCopyButton = methodUpper !== 'CARD'; // CASH gets optional extra
-
   return (
-    <View style={[styles.root, {backgroundColor: t.bg}]}>
+    <KeyboardAvoidingView
+      style={[styles.root, {backgroundColor: t.bg}]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View
         style={[styles.card, {backgroundColor: t.card, borderColor: t.border}]}>
         <View style={styles.headerRow}>
@@ -443,41 +487,75 @@ export default function ReceiptScreen({
           <View style={{width: 60}} />
         </View>
 
+        <View
+          style={[
+            styles.summaryBox,
+            {backgroundColor: t.inputBg, borderColor: t.border},
+          ]}>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Method:{' '}
+            <Text style={{color: t.text, fontWeight: '900'}}>
+              {methodUpper || '—'}
+            </Text>
+          </Text>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Total:{' '}
+            <Text style={{color: t.gold, fontWeight: '900'}}>{totalText}</Text>
+          </Text>
+        </View>
+
+        <View
+          style={[
+            styles.emailBox,
+            {backgroundColor: t.inputBg, borderColor: t.border},
+          ]}>
+          <Text style={{color: t.muted, marginBottom: 6, fontSize: 12}}>
+            Email receipt to
+          </Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="customer@email.com"
+            placeholderTextColor={t.muted}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="done"
+            style={{
+              color: t.text,
+              fontSize: 15,
+              padding: 0,
+              margin: 0,
+              fontWeight: '800',
+            }}
+          />
+          {!email.trim() || isValidEmail(email) ? null : (
+            <Text
+              style={{
+                color: '#ef4444',
+                marginTop: 6,
+                fontSize: 12,
+                fontWeight: '800',
+              }}>
+              Please enter a valid email.
+            </Text>
+          )}
+        </View>
+
         <Pressable
-          onPress={handlePrint}
-          disabled={printing}
+          onPress={handleEmailReceipt}
+          disabled={busy}
           {...androidRipple('rgba(250,204,21,0.10)')}
           style={({pressed}) => [
-            styles.printBtn,
+            styles.primaryBtn,
             {backgroundColor: t.inputBg, borderColor: t.border},
-            printing ? {opacity: 0.6} : null,
+            busy ? {opacity: 0.6} : null,
             pressFX({pressed}),
           ]}>
-          <Text style={[styles.printText, {color: t.gold}]}>
-            {printing
-              ? 'Printing…'
-              : methodUpper === 'CARD'
-              ? 'Print (2 Copies)'
-              : 'Print (1 Copy)'}
+          <Text style={[styles.primaryText, {color: t.gold}]}>
+            {busy ? 'Preparing…' : 'Email Receipt'}
           </Text>
         </Pressable>
-
-        {showExtraCopyButton ? (
-          <Pressable
-            onPress={handlePrintExtra}
-            disabled={printing}
-            {...androidRipple('rgba(250,204,21,0.10)')}
-            style={({pressed}) => [
-              styles.extraBtn,
-              {backgroundColor: t.inputBg, borderColor: t.border},
-              printing ? {opacity: 0.6} : null,
-              pressFX({pressed}),
-            ]}>
-            <Text style={[styles.extraText, {color: t.text}]}>
-              Print Extra Copy
-            </Text>
-          </Pressable>
-        ) : null}
 
         <Pressable
           onPress={handleDone}
@@ -491,10 +569,10 @@ export default function ReceiptScreen({
         </Pressable>
 
         <Text style={[styles.note, {color: t.muted}]}>
-          Receipt prints on a 58mm roll printer.
+          Phone build: printing disabled. Email delivery is coming soon.
         </Text>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -525,25 +603,35 @@ const styles = StyleSheet.create({
   },
   backText: {fontSize: 13, fontWeight: '900'},
 
-  printBtn: {
-    marginTop: 16,
+  summaryBox: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginTop: 8,
+  },
+  summaryLine: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+
+  emailBox: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+
+  primaryBtn: {
+    marginTop: 14,
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
     borderWidth: 1,
     width: '100%',
   },
-  printText: {fontSize: 16, fontWeight: '900'},
-
-  extraBtn: {
-    marginTop: 10,
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    width: '100%',
-  },
-  extraText: {fontSize: 14, fontWeight: '900'},
+  primaryText: {fontSize: 16, fontWeight: '900'},
 
   doneBtn: {
     marginTop: 12,

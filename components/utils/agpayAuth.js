@@ -1,5 +1,4 @@
 // FILE: components/utils/agpayAuth.js
-// (Optional helper file if you want to re-use these across screens)
 import * as Keychain from 'react-native-keychain';
 
 export async function readAgpayAuthToken() {
