@@ -108,10 +108,10 @@ export default function TerminalScreen({
 
   const connected = !!readerStatus?.connected;
 
+  // ✅ CHANGE: only show store name (no corporate name)
   const subtitle = useMemo(() => {
-    const c = sel?.corporateName ? sel.corporateName : 'Corporate';
-    const st = sel?.storeName ? sel.storeName : 'Store';
-    return `${c} · ${st}`;
+    const st = sel?.storeName ? String(sel.storeName) : 'Store';
+    return st;
   }, [sel]);
 
   const statusLabel =
@@ -155,7 +155,11 @@ export default function TerminalScreen({
                 <Text style={[s.titleAG, {color: t.text}]}>AG</Text>
                 <Text style={[s.titlePay, {color: t.gold}]}>Pay</Text>
               </View>
-              <Text style={[s.subtitle, {color: t.muted}]}>{subtitle}</Text>
+
+              {/* ✅ Subtitle now only store name */}
+              <Text style={[s.subtitle, {color: t.muted}]} numberOfLines={1}>
+                {subtitle}
+              </Text>
             </View>
 
             <Pressable

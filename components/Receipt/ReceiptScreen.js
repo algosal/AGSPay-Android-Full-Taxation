@@ -15,8 +15,11 @@ import {pressFX, androidRipple} from '../ui/pressFX';
 
 const GOLD = '#d4af37';
 
-// ✅ Stub URL for now (replace later with real API)
-const EMAIL_RECEIPT_URL = 'https://example.com/coming-soon-email-receipt';
+// ✅ LIVE endpoint
+const EMAIL_RECEIPT_URL = 'https://agspay.us/email/receipt.php';
+
+// ✅ TEST key (move to safer config later)
+const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
 
 function escapeHtml(input) {
   return String(input ?? '')
@@ -247,6 +250,51 @@ async function readLastReceipt() {
   }
 }
 
+/**
+ * ✅ This matches your BOOT logs:
+ * selection = { corporateName, storeName, ownerId, ... }
+ *
+ * We try common service names. Once you confirm which one actually works,
+ * we can lock it to ONE service name.
+ */
+async function readSelectionFromKeychain() {
+  const servicesToTry = [
+    'agpaySelection',
+    'agpaySelectedCorpStore',
+    'agpayCorpStoreSelection',
+    'agpayCorpStore',
+    'agpayStoreSelection',
+    'selection',
+  ];
+
+  for (const svc of servicesToTry) {
+    try {
+      const creds = await Keychain.getInternetCredentials(svc);
+      if (!creds?.password) continue;
+
+      const raw = String(creds.password).trim();
+      if (!raw) continue;
+
+      try {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === 'object') {
+          console.log(
+            '✅ ReceiptScreen => selection loaded from Keychain service:',
+            svc,
+          );
+          return obj;
+        }
+      } catch {
+        // ignore parse error and continue
+      }
+    } catch {
+      // ignore and try next
+    }
+  }
+
+  return null;
+}
+
 async function clearAgpayCommentFromKeychain() {
   try {
     await Keychain.setInternetCredentials('agpayComment', 'comment', ' ');
@@ -274,6 +322,9 @@ export default function ReceiptScreen({
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState(''); // ✅ always blank
 
+  // ✅ selection-derived store name
+  const [storeNameKC, setStoreNameKC] = useState('');
+
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
     const card = theme?.card ?? '#050814';
@@ -289,8 +340,14 @@ export default function ReceiptScreen({
   useEffect(() => {
     let mounted = true;
 
-    // ✅ Always start with blank email (customer enters it)
+    // ✅ Always start with blank email
     setEmail('');
+
+    // ✅ Pull selection/storeName from Keychain (this is what your BOOT logs show)
+    readSelectionFromKeychain().then(sel => {
+      if (!mounted) return;
+      if (sel?.storeName) setStoreNameKC(String(sel.storeName));
+    });
 
     if (receipt) {
       setLocalReceipt(receipt);
@@ -345,37 +402,102 @@ export default function ReceiptScreen({
       setBusy(true);
 
       const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
-      const htmlVendor = buildReceiptHtml(localReceipt, "VENDOR'S COPY");
 
-      console.log('📧 Email Receipt (stub) to:', to);
+      // ✅ If not card, show CASH (or whatever receipt says)
+      const methodClean = String(
+        methodUpper || localReceipt?.paymentMethod || '',
+      ).toUpperCase();
+      const paymentMethod =
+        methodClean === 'CASH' ? 'CASH' : methodClean || 'CARD';
 
-      try {
-        const payload = {
-          to,
-          createdAtText: localReceipt?.createdAtText || '',
-          totalCents,
-          totalText,
-          method: methodUpper,
-          receipt: localReceipt,
-          htmlClient,
-          htmlVendor,
-        };
+      // ✅ Store name priority:
+      // 1) selection.storeName from Keychain (your BOOT logs)
+      // 2) receipt.storeName / corporateName
+      // 3) fallback AGPay
+      const storeName =
+        (storeNameKC && String(storeNameKC).trim()) ||
+        localReceipt?.storeName ||
+        localReceipt?.corporateName ||
+        'AGPay';
 
-        const resp = await fetch(EMAIL_RECEIPT_URL, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload),
-        });
+      const payload = {
+        to,
+        storeName,
+        createdAtText: localReceipt?.createdAtText || '',
+        paymentMethod,
+        receiptId:
+          localReceipt?.paymentId ||
+          localReceipt?.chargeId ||
+          localReceipt?.receiptId ||
+          '',
 
-        console.log('📧 Email stub HTTP:', resp.status);
-      } catch (e) {
-        console.log('📧 Email stub request failed (expected for now):', e);
+        subtotalText: money(resolveCents(localReceipt, 'subtotalCents')),
+        taxText: money(resolveCents(localReceipt, 'taxCents')),
+        tipText: money(resolveCents(localReceipt, 'tipCents')),
+        totalText,
+
+        // Breakdown for server template
+        items: [
+          {
+            name: 'Subtotal',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'subtotalCents')),
+          },
+          {
+            name: 'Sales Tax',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'taxCents')),
+          },
+          {
+            name: 'Service Fee',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'albaFeeCents')),
+          },
+          {
+            name: 'Tip',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'tipCents')),
+          },
+        ].filter(x => x.priceText !== '$0.00'),
+
+        notes:
+          'Thank you for choosing AGPay. Your confirmation has been recorded securely. ' +
+          'If anything looks unfamiliar, reply to this email and our team will assist promptly.',
+
+        htmlClient,
+      };
+
+      console.log('📧 Email Receipt => POST', EMAIL_RECEIPT_URL);
+      console.log('📧 Email Receipt => storeName:', storeName);
+      console.log('📧 Email Receipt => paymentMethod:', paymentMethod);
+      console.log('📧 Email Receipt => payload keys:', Object.keys(payload));
+
+      const resp = await fetch(EMAIL_RECEIPT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AGPAY-KEY': AGPAY_EMAIL_KEY,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await resp.text();
+      console.log('📧 Email Receipt => HTTP', resp.status, text);
+
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${text}`);
       }
 
-      Alert.alert(
-        'Email Receipt (Coming Soon)',
-        `Email: ${to}\nTotal: ${totalText}\n\nReceipt emailing will be enabled soon.`,
-      );
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {}
+
+      if (json && json.ok === true) {
+        Alert.alert('Sent', `Receipt emailed to:\n${to}`);
+      } else {
+        Alert.alert('Sent', `Receipt request completed.\n\nServer:\n${text}`);
+      }
 
       await clearAgpayCommentFromKeychain();
     } catch (e) {
@@ -384,7 +506,7 @@ export default function ReceiptScreen({
     } finally {
       setBusy(false);
     }
-  }, [busy, email, localReceipt, methodUpper, totalCents, totalText]);
+  }, [busy, email, localReceipt, methodUpper, totalText, storeNameKC]);
 
   const handleBack = useCallback(() => {
     if (typeof onBack === 'function') return onBack();
@@ -433,6 +555,15 @@ export default function ReceiptScreen({
           <Text style={[styles.summaryLine, {color: t.muted}]}>
             Total:{' '}
             <Text style={{color: t.gold, fontWeight: '900'}}>{totalText}</Text>
+          </Text>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Store:{' '}
+            <Text style={{color: t.text, fontWeight: '900'}}>
+              {storeNameKC ||
+                localReceipt?.storeName ||
+                localReceipt?.corporateName ||
+                'AGPay'}
+            </Text>
           </Text>
         </View>
 
@@ -485,7 +616,7 @@ export default function ReceiptScreen({
             pressFX({pressed}),
           ]}>
           <Text style={[styles.primaryText, {color: t.gold}]}>
-            {busy ? 'Preparing…' : 'Email Receipt'}
+            {busy ? 'Sending…' : 'Email Receipt'}
           </Text>
         </Pressable>
 
@@ -501,7 +632,7 @@ export default function ReceiptScreen({
         </Pressable>
 
         <Text style={[styles.note, {color: t.muted}]}>
-          Phone build: printing disabled. Email delivery is coming soon.
+          Email receipts are delivered via AGPay support.
         </Text>
       </View>
     </KeyboardAvoidingView>
