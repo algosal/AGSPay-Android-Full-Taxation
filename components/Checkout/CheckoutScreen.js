@@ -74,7 +74,7 @@ export default function CheckoutScreen({
   }, [chargeData?.method]);
 
   const confirmLabel =
-    method === 'CASH' ? 'Complete Cash & Print Receipt' : 'Charge Card';
+    method === 'CASH' ? 'Complete Cash & Email Receipt' : 'Charge Card';
 
   return (
     <View style={[s.root, {backgroundColor: t.bg}]}>
