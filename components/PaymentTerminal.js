@@ -307,11 +307,14 @@ const PaymentTerminal = forwardRef(
           );
         }
 
+        // ✅ CRITICAL: Android NFC antenna is on BACK.
+        // This also helps user positioning behavior.
         try {
+          console.log('🔧 setTapToPayUxConfiguration(BACK)');
           await setTapToPayUxConfiguration({
             tapZone: {
-              tapZoneIndicator: TapZoneIndicator.FRONT,
-              tapZonePosition: {xBias: 0.5, yBias: 0.3},
+              tapZoneIndicator: TapZoneIndicator.BACK,
+              tapZonePosition: {xBias: 0.5, yBias: 0.45},
             },
             darkMode: DarkMode.DARK,
           });
@@ -435,6 +438,7 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
+        // Always cancel any prior discovery
         try {
           await cancelDiscovering();
         } catch {}
@@ -522,6 +526,7 @@ const PaymentTerminal = forwardRef(
 
     const startCardPayment = useCallback(async () => {
       try {
+        console.log('🟩 startCardPayment() begin');
         await ensureInit();
 
         if (!connectedReaderRef.current) {
@@ -579,7 +584,11 @@ const PaymentTerminal = forwardRef(
         if (retrieved?.error)
           throw new Error(retrieved.error?.message || 'Retrieve intent failed');
 
-        setStatusLine('Tap card now…');
+        // Give UX a beat before tapping
+        setStatusLine('Tap card now… (back of phone)');
+        console.log('🟨 collectPaymentMethod(): waiting for NFC tap...');
+        await new Promise(r => setTimeout(r, 250));
+
         const collected = await collectPaymentMethod({
           paymentIntent: retrieved?.paymentIntent,
         });

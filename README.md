@@ -1,79 +1,139 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# 💳 AGPay — Android Tablet (Tap to Pay)
 
-# Getting Started
+🚧 **AGPay Android Tablet build** for **NFC-enabled Android tablets**, supporting **Tap to Pay** with contactless credit & debit cards.
 
->**Note**: Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/environment-setup) instructions till "Creating a new application" step, before proceeding.
+This repository contains the **tablet-focused variant** of AGPay. The core payment flow is functional, with **ongoing device-specific tuning** in progress.
 
-## Step 1: Start the Metro Server
+---
 
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
+## ✨ What Works Today
 
-To start Metro, run the following command from the _root_ of your React Native project:
+✅ **Tap to Pay on Android (Tablet)**
 
-```bash
-# using npm
-npm start
+- Uses built-in **NFC hardware**
+- Accepts contactless **credit & debit cards**
+- Stripe Terminal integration active
 
-# OR using Yarn
-yarn start
+✅ **Complete Checkout Flow**
+
 ```
 
-## Step 2: Start your Application
+Amount → Tip → Payment Method → Receipt
 
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
-
-### For Android
-
-```bash
-# using npm
-npm run android
-
-# OR using Yarn
-yarn android
 ```
 
-### For iOS
+✅ **Store Terminal Mode**
+
+- Terminal screen can remain open indefinitely
+- Reader connect / disconnect supported
+- Designed for counter-style tablet usage
+
+✅ **Receipts**
+
+- 📧 Email receipts supported
+- 🧾 Full breakdown:
+  - Subtotal
+  - Sales tax
+  - Service fee
+  - Tip
+  - Total
+
+---
+
+## ⚠️ Known Tablet-Specific Issue (In Progress)
+
+🚧 **NFC tag read behavior on tablets**
+
+- Some Android tablets handle NFC tag discovery differently than phones
+- Occasional inconsistency when reading Tap to Pay card tags
+- Being actively tested and adjusted on real hardware
+
+> A tablet device is scheduled for hands-on debugging and tuning.  
+> Fixes will be applied before backend expansion (DynamoDB + Lambda work).
+
+---
+
+## 📱 Device Requirements
+
+- **Android tablet with NFC**
+- NFC **enabled** in system settings
+- Internet connection (auth + payment processing)
+- Supported Android version per Stripe Tap to Pay requirements
+
+> ⚠️ Not all tablets implement NFC identically. Device compatibility testing is ongoing.
+
+---
+
+## 🛠️ Tech Stack
+
+- **React Native**
+- **Stripe Terminal (Tap to Pay on Android)**
+- **NFC-based contactless payments**
+- Backend APIs (auth, verification, receipts)
+
+---
+
+## ⚙️ Setup
+
+Install dependencies:
 
 ```bash
-# using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+npm install
 ```
 
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
+---
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+## ▶️ Run on Android Tablet
 
-## Step 3: Modifying your App
+```bash
+npx react-native run-android
+```
 
-Now that you have successfully run the app, let's modify it.
+Or:
 
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+- Open the `android/` folder in **Android Studio**
+- Build & run on a **physical NFC-enabled tablet**
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+> ⚠️ Emulator will NOT support Tap to Pay.
 
-## Congratulations! :tada:
+---
 
-You've successfully run and modified your React Native App. :partying_face:
+## 🧪 Testing Notes
 
-### Now what?
+- Always test on **real hardware**
+- Ensure NFC is enabled before launching the app
+- Keep device unlocked during Tap to Pay interactions
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [Introduction to React Native](https://reactnative.dev/docs/getting-started).
+---
 
-# Troubleshooting
+## 🗺️ Roadmap (Short-Term)
 
-If you can't get this to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+- 🔧 Fix tablet NFC tag detection consistency
+- 🧪 Validate Tap to Pay flow across tablet models
+- 🧠 Then proceed to:
 
-# Learn More
+  - DynamoDB transaction aggregation
+  - Sales-of-the-day Lambda
+  - Backend optimizations
 
-To learn more about React Native, take a look at the following resources:
+---
 
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+## 📦 Repository Status
+
+🟡 **Functional, under active tablet tuning**
+🟢 Core payment flow working
+🔧 Device-specific NFC adjustments in progress
+
+---
+
+## 🏁 Summary
+
+This repository represents the **Android Tablet build of AGPay**, sharing the same payment architecture as the phone version, with additional work underway to accommodate tablet-specific NFC behavior.
+
+Once NFC tuning is finalized, backend expansion will resume.
+
+💳 Bigger screen. Same secure payments.
+
+```
+
+```

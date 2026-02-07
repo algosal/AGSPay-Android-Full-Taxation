@@ -16,6 +16,44 @@ function moneyLabelFromCents(cents) {
   return `$${(c / 100).toFixed(2)}`;
 }
 
+// Try to infer the base charge amount (in cents) from common fields.
+// Adjust/add fields here if your chargeData uses a different schema.
+function getBaseAmountCents(chargeData) {
+  const cd = chargeData || {};
+  const meta = cd.meta || {};
+
+  // Common patterns:
+  // - amountCents / subtotalCents / totalCents
+  // - amount (already cents) or amount in dollars (less common)
+  const candidates = [
+    cd.amountCents,
+    cd.subtotalCents,
+    cd.totalCents,
+    cd.chargeCents,
+    meta.amountCents,
+    meta.subtotalCents,
+    meta.totalCents,
+    meta.chargeCents,
+  ].filter(v => v !== undefined && v !== null);
+
+  if (candidates.length) {
+    const n = Number(candidates[0]);
+    return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+  }
+
+  // If you *know* your field name, you can hard-wire it:
+  // return Number(cd.amount_cents || 0);
+
+  return 0;
+}
+
+function tipFromPercent(baseCents, percent) {
+  const b = Math.max(0, Number(baseCents || 0));
+  const p = Math.max(0, Number(percent || 0));
+  // Round to nearest cent
+  return Math.round((b * p) / 100);
+}
+
 export default function FixedTipScreen({
   chargeData,
   onOther, // go to TipScreen (custom keypad)
@@ -40,13 +78,10 @@ export default function FixedTipScreen({
   const subtitle =
     (corporateName || 'Corporate') + ' · ' + (storeName || 'Store');
 
-  // Preset tips (edit these freely)
-  const presets = [
-    {label: '$1', cents: 100},
-    {label: '$3', cents: 300},
-    {label: '$5', cents: 500},
-    {label: '$10', cents: 1000},
-  ];
+  const baseCents = useMemo(() => getBaseAmountCents(chargeData), [chargeData]);
+
+  // Percent presets (edit freely)
+  const percentPresets = [10, 15, 20, 25];
 
   function pickTip(tipCents) {
     if (typeof onDone !== 'function') {
@@ -55,6 +90,36 @@ export default function FixedTipScreen({
     }
     onDone({tipCents: Number(tipCents || 0)});
   }
+
+  const tiles = [
+    ...percentPresets.map(pct => {
+      const cents = tipFromPercent(baseCents, pct);
+      return {
+        key: `pct-${pct}`,
+        top: `${pct}%`,
+        bottom: moneyLabelFromCents(cents),
+        onPress: () => pickTip(cents),
+      };
+    }),
+
+    // “No tip, thank you” as a tile (same style)
+    {
+      key: 'no-tip',
+      top: 'No tip',
+      bottom: 'Thank you',
+      onPress: () => pickTip(0),
+      variant: 'alt', // tint it with gold text like your "alt" style
+    },
+
+    // “Other amount” as a tile (same style)
+    {
+      key: 'other',
+      top: 'Other',
+      bottom: moneyLabelFromCents(0),
+      onPress: onOther,
+      variant: 'alt',
+    },
+  ];
 
   return (
     <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]}>
@@ -77,45 +142,38 @@ export default function FixedTipScreen({
         style={[styles.card, {borderColor: t.border, backgroundColor: t.card}]}>
         <Text style={[styles.cardLabel, {color: t.muted}]}>Choose a tip</Text>
 
+        {/* Optional: show base amount if available */}
+        <Text style={[styles.baseRow, {color: t.muted}]}>
+          Based on: {moneyLabelFromCents(baseCents)}
+        </Text>
+
         <View style={styles.grid}>
-          {presets.map((p, idx) => (
+          {tiles.map(tile => (
             <Pressable
-              key={`${p.label}-${idx}`}
-              onPress={() => pickTip(p.cents)}
+              key={tile.key}
+              onPress={tile.onPress}
               style={({pressed}) => [
                 styles.presetBox,
                 {
                   borderColor: t.border,
-                  backgroundColor: t.inputBg,
+                  backgroundColor:
+                    tile.variant === 'alt' ? t.altCard : t.inputBg,
                   opacity: pressed ? 0.9 : 1,
                 },
               ]}>
-              <Text style={[styles.presetTop, {color: t.text}]}>{p.label}</Text>
+              <Text
+                style={[
+                  styles.presetTop,
+                  {color: tile.variant === 'alt' ? t.gold : t.text},
+                ]}>
+                {tile.top}
+              </Text>
               <Text style={[styles.presetBottom, {color: t.muted}]}>
-                {moneyLabelFromCents(p.cents)}
+                {tile.bottom}
               </Text>
             </Pressable>
           ))}
         </View>
-
-        {/* Other -> go to keypad tip screen */}
-        <Pressable
-          onPress={onOther}
-          style={({pressed}) => [
-            styles.otherRow,
-            {
-              borderColor: t.border,
-              backgroundColor: t.altCard,
-              opacity: pressed ? 0.9 : 1,
-            },
-          ]}>
-          <View style={{flex: 1}}>
-            <Text style={[styles.otherTitle, {color: t.text}]}>Other</Text>
-            <Text style={[styles.otherSub, {color: t.muted}]}>$0.00</Text>
-          </View>
-
-          <Text style={[styles.otherChevron, {color: t.gold}]}>›</Text>
-        </Pressable>
 
         <Text style={[styles.hint, {color: t.muted}]}>
           Choose Other to enter a custom tip (including $0.00).
@@ -145,7 +203,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 14,
   },
-  cardLabel: {fontWeight: '900', fontSize: 12, marginBottom: 10},
+  cardLabel: {fontWeight: '900', fontSize: 12, marginBottom: 6},
+
+  baseRow: {fontSize: 12, fontWeight: '800', marginBottom: 10},
 
   grid: {
     flexDirection: 'row',
@@ -160,21 +220,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     alignItems: 'center',
   },
-  presetTop: {fontSize: 22, fontWeight: '900'},
+  presetTop: {fontSize: 20, fontWeight: '900'},
   presetBottom: {marginTop: 4, fontSize: 12, fontWeight: '800'},
-
-  otherRow: {
-    marginTop: 12,
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  otherTitle: {fontSize: 16, fontWeight: '900'},
-  otherSub: {marginTop: 2, fontSize: 12, fontWeight: '800'},
-  otherChevron: {fontSize: 26, fontWeight: '900', marginLeft: 10},
 
   hint: {marginTop: 10, fontSize: 12, textAlign: 'center'},
 });

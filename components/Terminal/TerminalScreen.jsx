@@ -58,8 +58,10 @@ function centsToMoney(cents) {
 }
 
 export default function TerminalScreen({
-  onBackToStoreSelect,
+  // onBackToStoreSelect, // ✅ not used (Back removed)
+
   onGoToTip,
+  onGoToSales, // ✅ NEW
   onConnectReader,
   onDisconnectReader,
   readerStatus,
@@ -108,10 +110,10 @@ export default function TerminalScreen({
 
   const connected = !!readerStatus?.connected;
 
+  // ✅ only show store name (no corporate name)
   const subtitle = useMemo(() => {
-    const c = sel?.corporateName ? sel.corporateName : 'Corporate';
-    const st = sel?.storeName ? sel.storeName : 'Store';
-    return `${c} · ${st}`;
+    const st = sel?.storeName ? String(sel.storeName) : 'Store';
+    return st;
   }, [sel]);
 
   const statusLabel =
@@ -137,25 +139,18 @@ export default function TerminalScreen({
           ]}
           pointerEvents="auto">
           <View style={s.headerRow} pointerEvents="auto">
-            <Pressable
-              onPress={() => onBackToStoreSelect?.()}
-              hitSlop={12}
-              style={[
-                s.connectChip,
-                {
-                  backgroundColor: t.inputBg,
-                  borderColor: t.border,
-                },
-              ]}>
-              <Text style={[s.connectChipText, {color: t.text}]}>Back</Text>
-            </Pressable>
+            {/* ✅ Back button removed. Keep spacing so header stays centered */}
+            <View style={{width: 60}} />
 
             <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
               <View style={s.titleRow}>
                 <Text style={[s.titleAG, {color: t.text}]}>AG</Text>
                 <Text style={[s.titlePay, {color: t.gold}]}>Pay</Text>
               </View>
-              <Text style={[s.subtitle, {color: t.muted}]}>{subtitle}</Text>
+
+              <Text style={[s.subtitle, {color: t.muted}]} numberOfLines={1}>
+                {subtitle}
+              </Text>
             </View>
 
             <Pressable
@@ -258,6 +253,27 @@ export default function TerminalScreen({
               returnKeyType="done"
             />
           </View>
+
+          {/* ✅ NEW: Sales button */}
+          <Pressable
+            onPress={() => onGoToSales?.()}
+            hitSlop={16}
+            style={[
+              s.bigAmountBox,
+              {
+                marginTop: 12,
+                backgroundColor: t.inputBg,
+                borderColor: t.border,
+                alignItems: 'center',
+                justifyContent: 'center',
+                paddingVertical: 18,
+              },
+            ]}>
+            <Text style={{fontSize: 32}}>💰</Text>
+            <Text style={{color: t.gold, marginTop: 6, fontWeight: '800'}}>
+              Today’s Sales
+            </Text>
+          </Pressable>
 
           <Text
             style={[s.statusText, {marginTop: 10, color: t.muted}]}

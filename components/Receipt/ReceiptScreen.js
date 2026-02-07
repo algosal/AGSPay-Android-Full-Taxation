@@ -1,11 +1,32 @@
 ﻿// FILE: components/Receipt/ReceiptScreen.js
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {View, Text, Pressable, StyleSheet, Alert} from 'react-native';
-import RNPrint from 'react-native-print';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Alert,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import * as Keychain from 'react-native-keychain';
-import {pressFX, androidRipple} from '../ui/pressFX';
 
 const GOLD = '#d4af37';
+
+// ✅ LIVE endpoint
+const EMAIL_RECEIPT_URL = 'https://agspay.us/email/receipt.php';
+
+// ✅ TEST key (move to safer config later)
+const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
+
+function safeJsonParse(x) {
+  try {
+    return JSON.parse(String(x || '').trim());
+  } catch {
+    return null;
+  }
+}
 
 function escapeHtml(input) {
   return String(input ?? '')
@@ -42,9 +63,9 @@ function resolveCents(receipt, key) {
 }
 
 /**
- * ✅ NEW: builds HTML with a copy label (Client/Vendor/etc)
+ * ✅ build HTML (for emailing)
  */
-function buildReceiptHtml(receipt, copyLabel) {
+function buildReceiptHtml(receipt, copyLabel = '') {
   const r = receipt || {};
 
   const totalCents =
@@ -104,15 +125,14 @@ function buildReceiptHtml(receipt, copyLabel) {
     )
     .join('');
 
-  const safeCopy = String(copyLabel || '').trim();
+  const copy = String(copyLabel || '').trim();
 
   return `
   <html>
   <head>
     <meta charset="utf-8" />
     <style>
-      @page { size: 58mm auto; margin: 0; }
-      html, body { width: 58mm; margin: 0; padding: 0; background: #fff; }
+      html, body { margin: 0; padding: 0; background: #fff; }
       body {
         font-family: monospace;
         font-size: 18px;
@@ -122,22 +142,22 @@ function buildReceiptHtml(receipt, copyLabel) {
         print-color-adjust: exact;
         box-sizing: border-box;
       }
-      .wrap { padding: 0 1.2mm; }
+      .wrap { padding: 14px 16px; max-width: 420px; margin: 0 auto; }
 
       .brand { text-align: center; margin-top: 6px; }
       .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
       .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
 
-      .copy {
-        text-align: center;
+      .copyTag {
         margin-top: 6px;
-        font-size: 13px;
+        text-align: center;
+        font-size: 14px;
         font-weight: 900;
         letter-spacing: 1px;
         text-transform: uppercase;
       }
 
-      .divider { border-top: 1px solid #000; margin: 8px 0; }
+      .divider { border-top: 1px solid #000; margin: 12px 0; }
 
       .meta { font-size: 14px; margin: 2px 0; }
       .meta .k { opacity: 0.75; }
@@ -151,16 +171,16 @@ function buildReceiptHtml(receipt, copyLabel) {
       .totalWrap {
         border-top: 1px solid #000;
         border-bottom: 1px solid #000;
-        padding: 6px 0;
-        margin-top: 6px;
+        padding: 10px 0;
+        margin-top: 10px;
       }
       .totalRow { display: flex; justify-content: space-between; align-items: baseline; }
       .totalLabel { font-size: 16px; font-weight: 900; letter-spacing: 1px; }
       .totalValue { font-size: 22px; font-weight: 900; }
 
-      .tiny { font-size: 12px; opacity: 0.9; margin-top: 6px; }
+      .tiny { font-size: 12px; opacity: 0.9; margin-top: 8px; }
 
-      .footer { text-align: center; margin-top: 10px; padding-bottom: 10px; }
+      .footer { text-align: center; margin-top: 12px; padding-bottom: 10px; }
       .thanks { font-weight: 900; letter-spacing: 1px; text-transform: uppercase; font-size: 14px; }
       .fine { font-size: 11px; opacity: 0.9; margin-top: 4px; }
     </style>
@@ -172,7 +192,7 @@ function buildReceiptHtml(receipt, copyLabel) {
         <div class="sub">RECEIPT</div>
       </div>
 
-      ${safeCopy ? `<div class="copy">${escapeHtml(safeCopy)}</div>` : ''}
+      ${copy ? `<div class="copyTag">${escapeHtml(copy)}</div>` : ''}
 
       <div class="divider"></div>
 
@@ -265,11 +285,21 @@ async function readLastReceipt() {
 }
 
 /**
- * ✅ IMPORTANT (Android):
+ * ✅ selection = { corporateName, storeName, ownerId, ... }
+ */
+async function readSelectionFromKeychain() {
+  try {
+    const creds = await Keychain.getInternetCredentials('agpaySelection');
+    if (!creds?.password) return null;
+    return safeJsonParse(creds.password) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * setInternetCredentials() throws if username OR password is empty.
  * We clear by storing a single space, and readers must trim().
- *
- * This ONLY touches service: 'agpayComment' (NOT 'agpaySelection').
  */
 async function clearAgpayCommentFromKeychain() {
   try {
@@ -281,9 +311,18 @@ async function clearAgpayCommentFromKeychain() {
   }
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+function isValidEmail(email) {
+  const e = String(email || '').trim();
+  if (!e) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
+
+// --- local press helpers (so we don’t depend on ../ui/pressFX) ---
+const pressFX = ({pressed}) =>
+  pressed ? {opacity: 0.85, transform: [{scale: 0.99}]} : null;
+
+const androidRipple = (color = 'rgba(255,255,255,0.12)') =>
+  Platform.OS === 'android' ? {android_ripple: {color, borderless: false}} : {};
 
 export default function ReceiptScreen({
   theme,
@@ -293,7 +332,13 @@ export default function ReceiptScreen({
   onResetTxn,
 }) {
   const [localReceipt, setLocalReceipt] = useState(receipt || null);
-  const [printing, setPrinting] = useState(false);
+
+  // ✅ email UI state
+  const [email, setEmail] = useState('');
+  const [busyEmail, setBusyEmail] = useState(false);
+
+  // ✅ selection-derived store name (optional)
+  const [storeNameKC, setStoreNameKC] = useState('');
 
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -310,9 +355,18 @@ export default function ReceiptScreen({
   useEffect(() => {
     let mounted = true;
 
+    setEmail('');
+
+    readSelectionFromKeychain().then(sel => {
+      if (!mounted) return;
+      if (sel?.storeName) setStoreNameKC(String(sel.storeName));
+    });
+
     if (receipt) {
       setLocalReceipt(receipt);
-      return;
+      return () => {
+        mounted = false;
+      };
     }
 
     readLastReceipt().then(saved => {
@@ -334,80 +388,132 @@ export default function ReceiptScreen({
     return String(m || '').toUpperCase();
   }, [localReceipt, receipt]);
 
+  const totalCents =
+    Number(localReceipt?.totalCents) ||
+    Number(localReceipt?.grandTotalCents) ||
+    Number(localReceipt?.amountCents) ||
+    Number(localReceipt?.breakdown?.totalCents) ||
+    0;
+
+  const totalText =
+    localReceipt?.totalLabel ||
+    localReceipt?.amountText ||
+    money(totalCents) ||
+    '$0.00';
+
   /**
-   * ✅ RULES:
-   * - CARD: print 2 automatically (Client then Vendor)
-   * - CASH: print 1 (default), optional extra
+   * ✅ Email receipt (no printing dependency)
    */
-  const printCardTwoCopies = useCallback(async r => {
-    const htmlClient = buildReceiptHtml(r, 'CLIENT COPY');
-    await RNPrint.print({html: htmlClient});
-
-    await sleep(2000);
-
-    const htmlVendor = buildReceiptHtml(r, "VENDOR'S COPY");
-    await RNPrint.print({html: htmlVendor});
-  }, []);
-
-  const printSingleCopy = useCallback(async (r, label) => {
-    const html = buildReceiptHtml(r, label || '');
-    await RNPrint.print({html});
-  }, []);
-
-  const handlePrint = useCallback(async () => {
+  const handleEmailReceipt = useCallback(async () => {
     try {
-      if (printing) return;
+      if (busyEmail) return;
       if (!localReceipt) {
         Alert.alert('No receipt', 'Receipt data is not available yet.');
         return;
       }
 
-      setPrinting(true);
+      const to = String(email || '').trim();
+      if (!isValidEmail(to)) {
+        Alert.alert('Invalid email', 'Please enter a valid email address.');
+        return;
+      }
 
-      if (methodUpper === 'CARD') {
-        await printCardTwoCopies(localReceipt);
+      setBusyEmail(true);
+
+      // Build HTML body for email
+      const htmlClient = buildReceiptHtml(localReceipt, 'CLIENT COPY');
+
+      const methodClean = String(
+        methodUpper || localReceipt?.paymentMethod || '',
+      ).toUpperCase();
+      const paymentMethod =
+        methodClean === 'CASH' ? 'CASH' : methodClean || 'CARD';
+
+      const storeName =
+        (storeNameKC && String(storeNameKC).trim()) ||
+        localReceipt?.storeName ||
+        localReceipt?.corporateName ||
+        'AGPay';
+
+      const payload = {
+        to,
+        storeName,
+        createdAtText: localReceipt?.createdAtText || '',
+        paymentMethod,
+        receiptId:
+          localReceipt?.paymentId ||
+          localReceipt?.chargeId ||
+          localReceipt?.receiptId ||
+          '',
+
+        subtotalText: money(resolveCents(localReceipt, 'subtotalCents')),
+        taxText: money(resolveCents(localReceipt, 'taxCents')),
+        tipText: money(resolveCents(localReceipt, 'tipCents')),
+        totalText,
+
+        items: [
+          {
+            name: 'Subtotal',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'subtotalCents')),
+          },
+          {
+            name: 'Sales Tax',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'taxCents')),
+          },
+          {
+            name: 'Service Fee',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'albaFeeCents')),
+          },
+          {
+            name: 'Tip',
+            qty: 1,
+            priceText: money(resolveCents(localReceipt, 'tipCents')),
+          },
+        ].filter(x => x.priceText !== '$0.00'),
+
+        notes:
+          'Thank you for choosing AGPay. Your confirmation has been recorded securely. ' +
+          'If anything looks unfamiliar, reply to this email and our team will assist promptly.',
+
+        htmlClient,
+      };
+
+      console.log('📧 Email Receipt => POST', EMAIL_RECEIPT_URL);
+      console.log('📧 Email Receipt => storeName:', storeName);
+      console.log('📧 Email Receipt => paymentMethod:', paymentMethod);
+
+      const resp = await fetch(EMAIL_RECEIPT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AGPAY-KEY': AGPAY_EMAIL_KEY,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await resp.text();
+      console.log('📧 Email Receipt => HTTP', resp.status, text);
+
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text}`);
+
+      const json = safeJsonParse(text);
+      if (json && json.ok === true) {
+        Alert.alert('Sent', `Receipt emailed to:\n${to}`);
       } else {
-        // CASH (or unknown): print 1 only
-        await printSingleCopy(localReceipt, 'CLIENT COPY');
+        Alert.alert('Sent', `Receipt request completed.\n\nServer:\n${text}`);
       }
-
-      // clear comment after successful print
-      await clearAgpayCommentFromKeychain();
-    } catch (e) {
-      console.log('PRINT error:', e);
-      Alert.alert('Print failed', String(e?.message || e));
-    } finally {
-      setPrinting(false);
-    }
-  }, [
-    localReceipt,
-    methodUpper,
-    printCardTwoCopies,
-    printSingleCopy,
-    printing,
-  ]);
-
-  const handlePrintExtra = useCallback(async () => {
-    try {
-      if (printing) return;
-      if (!localReceipt) {
-        Alert.alert('No receipt', 'Receipt data is not available yet.');
-        return;
-      }
-
-      setPrinting(true);
-
-      // Extra copy for CASH (vendor copy)
-      await printSingleCopy(localReceipt, "VENDOR'S COPY");
 
       await clearAgpayCommentFromKeychain();
     } catch (e) {
-      console.log('PRINT EXTRA error:', e);
-      Alert.alert('Print failed', String(e?.message || e));
+      console.log('EMAIL RECEIPT error:', e);
+      Alert.alert('Email failed', String(e?.message || e));
     } finally {
-      setPrinting(false);
+      setBusyEmail(false);
     }
-  }, [localReceipt, printSingleCopy, printing]);
+  }, [busyEmail, email, localReceipt, methodUpper, totalText, storeNameKC]);
 
   const handleBack = useCallback(() => {
     if (typeof onBack === 'function') return onBack();
@@ -420,10 +526,10 @@ export default function ReceiptScreen({
     onDone?.();
   }, [onDone, onResetTxn]);
 
-  const showExtraCopyButton = methodUpper !== 'CARD'; // CASH gets optional extra
-
   return (
-    <View style={[styles.root, {backgroundColor: t.bg}]}>
+    <KeyboardAvoidingView
+      style={[styles.root, {backgroundColor: t.bg}]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View
         style={[styles.card, {backgroundColor: t.card, borderColor: t.border}]}>
         <View style={styles.headerRow}>
@@ -443,41 +549,86 @@ export default function ReceiptScreen({
           <View style={{width: 60}} />
         </View>
 
+        {/* Summary */}
+        <View
+          style={[
+            styles.summaryBox,
+            {backgroundColor: t.inputBg, borderColor: t.border},
+          ]}>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Method:{' '}
+            <Text style={{color: t.text, fontWeight: '900'}}>
+              {methodUpper || '—'}
+            </Text>
+          </Text>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Total:{' '}
+            <Text style={{color: t.gold, fontWeight: '900'}}>{totalText}</Text>
+          </Text>
+          <Text style={[styles.summaryLine, {color: t.muted}]}>
+            Store:{' '}
+            <Text style={{color: t.text, fontWeight: '900'}}>
+              {storeNameKC ||
+                localReceipt?.storeName ||
+                localReceipt?.corporateName ||
+                'AGPay'}
+            </Text>
+          </Text>
+        </View>
+
+        {/* ✅ Email box */}
+        <View
+          style={[
+            styles.emailBox,
+            {backgroundColor: t.inputBg, borderColor: t.border},
+          ]}>
+          <Text style={{color: t.muted, marginBottom: 6, fontSize: 12}}>
+            Email receipt to
+          </Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="customer@email.com"
+            placeholderTextColor={t.muted}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="done"
+            style={{
+              color: t.text,
+              fontSize: 15,
+              padding: 0,
+              margin: 0,
+              fontWeight: '800',
+            }}
+          />
+          {!email.trim() || isValidEmail(email) ? null : (
+            <Text
+              style={{
+                color: '#ef4444',
+                marginTop: 6,
+                fontSize: 12,
+                fontWeight: '800',
+              }}>
+              Please enter a valid email.
+            </Text>
+          )}
+        </View>
+
         <Pressable
-          onPress={handlePrint}
-          disabled={printing}
+          onPress={handleEmailReceipt}
+          disabled={busyEmail}
           {...androidRipple('rgba(250,204,21,0.10)')}
           style={({pressed}) => [
-            styles.printBtn,
+            styles.primaryBtn,
             {backgroundColor: t.inputBg, borderColor: t.border},
-            printing ? {opacity: 0.6} : null,
+            busyEmail ? {opacity: 0.6} : null,
             pressFX({pressed}),
           ]}>
-          <Text style={[styles.printText, {color: t.gold}]}>
-            {printing
-              ? 'Printing…'
-              : methodUpper === 'CARD'
-              ? 'Print (2 Copies)'
-              : 'Print (1 Copy)'}
+          <Text style={[styles.primaryText, {color: t.gold}]}>
+            {busyEmail ? 'Sending…' : 'Email Receipt'}
           </Text>
         </Pressable>
-
-        {showExtraCopyButton ? (
-          <Pressable
-            onPress={handlePrintExtra}
-            disabled={printing}
-            {...androidRipple('rgba(250,204,21,0.10)')}
-            style={({pressed}) => [
-              styles.extraBtn,
-              {backgroundColor: t.inputBg, borderColor: t.border},
-              printing ? {opacity: 0.6} : null,
-              pressFX({pressed}),
-            ]}>
-            <Text style={[styles.extraText, {color: t.text}]}>
-              Print Extra Copy
-            </Text>
-          </Pressable>
-        ) : null}
 
         <Pressable
           onPress={handleDone}
@@ -491,24 +642,16 @@ export default function ReceiptScreen({
         </Pressable>
 
         <Text style={[styles.note, {color: t.muted}]}>
-          Receipt prints on a 58mm roll printer.
+          Printing is disabled in this Android build. Email receipt works.
         </Text>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    padding: 16,
-    justifyContent: 'center',
-  },
-  card: {
-    borderRadius: 22,
-    padding: 18,
-    borderWidth: 1,
-  },
+  root: {flex: 1, padding: 16, justifyContent: 'center'},
+  card: {borderRadius: 22, padding: 18, borderWidth: 1},
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -525,25 +668,31 @@ const styles = StyleSheet.create({
   },
   backText: {fontSize: 13, fontWeight: '900'},
 
-  printBtn: {
-    marginTop: 16,
+  summaryBox: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginTop: 8,
+  },
+  summaryLine: {fontSize: 13, fontWeight: '800', marginBottom: 6},
+
+  emailBox: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+
+  primaryBtn: {
+    marginTop: 14,
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
     borderWidth: 1,
     width: '100%',
   },
-  printText: {fontSize: 16, fontWeight: '900'},
-
-  extraBtn: {
-    marginTop: 10,
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    width: '100%',
-  },
-  extraText: {fontSize: 14, fontWeight: '900'},
+  primaryText: {fontSize: 16, fontWeight: '900'},
 
   doneBtn: {
     marginTop: 12,
