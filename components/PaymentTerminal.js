@@ -19,6 +19,10 @@ import {TERMINAL_LOCATION_ID} from '../config/stripeTerminal.js';
 const CREATE_INTENT_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/create-intent';
 
+// ✅ THIS is your transactions endpoint (POST)
+const VENDIO_TXN_URL =
+  'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
+
 const LOCATION_ID = TERMINAL_LOCATION_ID;
 
 // ---------------------- helpers ----------------------
@@ -91,25 +95,25 @@ function toStripeMetadata(obj) {
   return out;
 }
 
-function buildStripeDescription({corporateName, storeName, comment}) {
+function buildStripeDescription({
+  corporateName,
+  storeName,
+  comment,
+  amountLabel,
+}) {
   const corp = String(corporateName || '').trim();
   const store = String(storeName || '').trim();
   const cmt = String(comment || '').trim();
+  const amt = String(amountLabel || '').trim();
 
+  // Keep this similar to what you were doing before (short + readable)
   const parts = [];
-  parts.push('Alba Gold Systems');
+  if (corp || store)
+    parts.push(`${corp || 'Corporate'} / ${store || 'Store'}`.trim());
+  if (amt) parts.push(amt);
+  if (cmt) parts.push(cmt);
 
-  if (corp || store) {
-    parts.push(
-      `${corp || 'Corporate'} / ${store || 'Store'}`
-        .replace(/\s+/g, ' ')
-        .trim(),
-    );
-  }
-
-  if (cmt) parts.push(cmt.replace(/\s+/g, ' ').trim());
-
-  return parts.join(' — ').slice(0, 255);
+  return parts.join(' · ').slice(0, 255);
 }
 
 async function createIntentOnBackend({
@@ -202,6 +206,106 @@ async function readAgpaySelection() {
   } catch (e) {
     console.log('readAgpaySelection error:', e);
     return null;
+  }
+}
+
+// ✅ After your corp/store screens, store may be saved under a separate service.
+// We’ll try a few common ones without changing your app flow.
+async function readStoreFromKeychainFallback() {
+  const servicesToTry = [
+    'agpayStore',
+    'agpaySelectedStore',
+    'agpayStoreSelection',
+    'agpayPickedStore',
+    'agpayStorePicked',
+    'selectedStore',
+    'storeSelection',
+    'store',
+  ];
+
+  for (const svc of servicesToTry) {
+    try {
+      const creds = await Keychain.getInternetCredentials(svc);
+      if (!creds?.password) continue;
+      const raw = String(creds.password || '').trim();
+      if (!raw) continue;
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') continue;
+
+      // accept common shapes
+      const storeName =
+        obj.storeName ||
+        obj?.store?.storeName ||
+        obj?.selectedStore?.storeName ||
+        obj?.storePicked?.storeName ||
+        obj.name;
+
+      const storeRef =
+        obj.storeRef ||
+        obj?.store?.storeRef ||
+        obj?.selectedStore?.storeRef ||
+        obj?.storePicked?.storeRef;
+
+      if (storeName || storeRef) {
+        return {
+          storeName: storeName ? String(storeName).trim() : '',
+          storeRef: storeRef ? String(storeRef).trim() : '',
+        };
+      }
+    } catch {}
+  }
+
+  return {storeName: '', storeRef: ''};
+}
+
+function intOr0(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+function pickCents(breakdown, debugMeta, keys) {
+  const b = breakdown && typeof breakdown === 'object' ? breakdown : {};
+  const d = debugMeta && typeof debugMeta === 'object' ? debugMeta : {};
+  for (const k of keys) {
+    if (b[k] !== undefined && b[k] !== null) return intOr0(b[k]);
+    if (d[k] !== undefined && d[k] !== null) return intOr0(d[k]);
+  }
+  return 0;
+}
+
+async function postTransactionToVendio(txnPayload) {
+  const jwt = await readAgpayAuthToken();
+
+  console.log('🧾 VendioTransactions → POST:', VENDIO_TXN_URL, txnPayload);
+
+  const resp = await fetch(VENDIO_TXN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(jwt ? {Authorization: jwt} : {}),
+    },
+    body: JSON.stringify(txnPayload),
+  });
+
+  const text = await resp.text();
+  console.log('🧾 VendioTransactions → HTTP:', resp.status, text);
+
+  if (!resp.ok) {
+    throw new Error(
+      `VendioTransactions POST failed: HTTP ${resp.status}. Body: ${text}`,
+    );
+  }
+
+  // response is JSON but can be large; log safely
+  try {
+    const json = JSON.parse(text);
+    console.log(
+      '🧾 VendioTransactions → OK (parsed): keys=',
+      Object.keys(json || {}),
+    );
+    return json;
+  } catch {
+    return text;
   }
 }
 
@@ -307,10 +411,8 @@ const PaymentTerminal = forwardRef(
           );
         }
 
-        // ✅ CRITICAL: Android NFC antenna is on BACK.
-        // This also helps user positioning behavior.
+        // UX only — you already confirmed NFC is on BACK for this tablet
         try {
-          console.log('🔧 setTapToPayUxConfiguration(BACK)');
           await setTapToPayUxConfiguration({
             tapZone: {
               tapZoneIndicator: TapZoneIndicator.BACK,
@@ -438,7 +540,6 @@ const PaymentTerminal = forwardRef(
           return false;
         }
 
-        // Always cancel any prior discovery
         try {
           await cancelDiscovering();
         } catch {}
@@ -550,23 +651,41 @@ const PaymentTerminal = forwardRef(
 
         setStatusLine('Creating PaymentIntent…');
 
-        const selection = await readAgpaySelection();
+        // selection may have corp but sometimes store gets cleared; we’ll fill from fallback if needed
+        const selection = (await readAgpaySelection()) || {};
+        const storeFallback = await readStoreFromKeychainFallback();
+
+        const corporateRef = String(selection?.corporateRef || '').trim();
+        const corporateName = String(selection?.corporateName || '').trim();
+        const storeRef = String(
+          selection?.storeRef || storeFallback?.storeRef || '',
+        ).trim();
+        const storeName = String(
+          selection?.storeName || storeFallback?.storeName || '',
+        ).trim();
+
+        console.log('🧾 TXN selection corporateRef:', corporateRef);
+        console.log('🧾 TXN selection corporateName:', corporateName);
+        console.log('🧾 TXN selection storeRef:', storeRef);
+        console.log('🧾 TXN selection storeName:', storeName);
 
         const uiCommentRaw = await readAgpayComment();
         const uiComment = String(uiCommentRaw || '').trim();
 
         const stripeDescription = buildStripeDescription({
-          corporateName: selection?.corporateName || '',
-          storeName: selection?.storeName || '',
-          comment: uiComment || '',
+          corporateName,
+          storeName,
+          comment: uiComment,
+          amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
         });
 
+        // Stripe metadata
         const baseMeta = {
-          corporateRef: selection?.corporateRef || '',
-          corporateName: selection?.corporateName || '',
-          storeRef: selection?.storeRef || '',
-          storeName: selection?.storeName || '',
-          ...(uiComment ? {comment: uiComment} : {}),
+          corporateRef,
+          corporateName,
+          storeRef,
+          storeName,
+          ...(uiComment ? {note: uiComment} : {}),
           ...(debugMeta || {}),
         };
 
@@ -584,11 +703,8 @@ const PaymentTerminal = forwardRef(
         if (retrieved?.error)
           throw new Error(retrieved.error?.message || 'Retrieve intent failed');
 
-        // Give UX a beat before tapping
-        setStatusLine('Tap card now… (back of phone)');
+        setStatusLine('Tap card now… (back of device)');
         console.log('🟨 collectPaymentMethod(): waiting for NFC tap...');
-        await new Promise(r => setTimeout(r, 250));
-
         const collected = await collectPaymentMethod({
           paymentIntent: retrieved?.paymentIntent,
         });
@@ -605,8 +721,110 @@ const PaymentTerminal = forwardRef(
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
+        // -----------------------------
+        // ✅ IMPORTANT: build VendioTransactions payload exactly for your Lambda
+        // It promotes from debugMeta.* using keys:
+        // subtotalCents, taxCents, serviceFeeCents, tipCents, totalCents
+        // -----------------------------
+        const subtotalCents = pickCents(breakdown, debugMeta, [
+          'subtotalCents',
+          'subtotal',
+        ]);
+        const taxCents = pickCents(breakdown, debugMeta, ['taxCents', 'tax']);
+        const tipCents = pickCents(breakdown, debugMeta, ['tipCents', 'tip']);
+        // ✅ use serviceFeeCents (NOT albaFeeCents)
+        const serviceFeeCents = pickCents(breakdown, debugMeta, [
+          'serviceFeeCents',
+          'albaFeeCents',
+          'albaFee',
+          'feeCents',
+        ]);
+        const totalCents = intOr0(amt);
+
+        const txnPayload = {
+          corporateRef,
+          corporateName,
+          storeRef,
+          storeName,
+
+          // ✅ top-level cents (so reporting columns fill even if promotion misses)
+          subtotalCents,
+          taxCents,
+          tipCents,
+          serviceFeeCents,
+          albaFeeCents: serviceFeeCents, // keep alias too
+          totalCents,
+
+          amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
+
+          // ✅ Your Lambda also promotes from debugMeta — match its expected keys
+          debugMeta: {
+            ...(debugMeta || {}),
+            subtotalCents,
+            taxCents,
+            tipCents,
+            serviceFeeCents,
+            // keep taxRate if you have it (Lambda will convert float->Decimal)
+            ...(debugMeta?.taxRate !== undefined
+              ? {taxRate: debugMeta.taxRate}
+              : {}),
+            // keep note if you have it
+            ...(uiComment ? {note: uiComment} : {}),
+          },
+
+          // keep any breakdown you already pass around (optional)
+          breakdown: breakdown || null,
+
+          descriptionSentToStripe: stripeDescription,
+          metadataSentToStripe: meta,
+
+          stripe: {
+            paymentIntentId: pi?.id || null,
+            status: pi?.status || null,
+            amount: pi?.amount || amt,
+            currency: pi?.currency || currency || 'usd',
+            paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
+            // chargeId is inside pi.charges[] in many objects; keep null if absent
+            chargeId: null,
+          },
+
+          stripeReturnedObject: JSON.stringify(pi || {}),
+          clientEpochMs: Date.now(),
+        };
+
+        // Try to pull chargeId + card details from charges array (if present)
+        try {
+          const charges = Array.isArray(pi?.charges) ? pi.charges : [];
+          const ch = charges[0] || null;
+          if (ch?.id) txnPayload.stripe.chargeId = ch.id;
+
+          const pmDetails = ch?.paymentMethodDetails || {};
+          const cp = pmDetails?.cardPresentDetails || {};
+          const cardPresent = pmDetails?.cardPresent || cp;
+          const brand = cardPresent?.brand || cp?.brand;
+          const last4 = cardPresent?.last4 || cp?.last4;
+
+          if (brand) txnPayload.brand = String(brand);
+          if (last4) txnPayload.last4 = String(last4);
+        } catch {}
+
+        // ✅ POST to VendioTransactions so the table has complete data
+        try {
+          setStatusLine('Saving transaction…');
+          await postTransactionToVendio(txnPayload);
+          console.log('✅ Transaction saved to VendioTransactions');
+        } catch (e) {
+          console.log('❌ Transaction save failed:', e);
+          // Still allow receipt screen, but alert you loudly
+          Alert.alert(
+            'Saved charge, but TXN save failed',
+            String(e?.message || e),
+          );
+        }
+
         await clearAgpayComment();
 
+        // Your existing success callback
         onPaymentSuccess?.({
           method: 'CARD',
           paymentMethod: 'CARD',
@@ -616,6 +834,10 @@ const PaymentTerminal = forwardRef(
           totalCents: amt,
           grandTotalCents: amt,
           breakdown: breakdown || null,
+          corporateRef,
+          corporateName,
+          storeRef,
+          storeName,
           stripe: {
             paymentIntentId: pi?.id || null,
             status: pi?.status || null,
