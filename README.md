@@ -24,8 +24,6 @@ Fully working AGPay Android application for **Android cell phones with NFC chips
 npm install
 ```
 
-````
-
 ## Run (Android)
 
 ```bash
@@ -46,4 +44,7 @@ Or open the `android/` folder in Android Studio and run the app.
 ```
 
 ```
-````
+
+```
+
+```
