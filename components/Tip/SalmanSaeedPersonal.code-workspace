@@ -1,0 +1,22 @@
+{
+  "folders": [
+	{
+		"path": "../../../../SalmanSaeedPersonal"
+	},
+	{
+		"path": "../../.."
+	},
+	{
+		"path": "../../../../../Users/sirsa/OneDrive/Documents/Obsidian Vault"
+	},
+	{
+		"path": "../../../../AG-Documentation"
+	},
+	{
+		"path": "../../../../AI"
+	}
+],
+  "settings": {
+    "liveServer.settings.multiRootWorkspaceName": "SalmanSaeedPersonal"
+  }
+}

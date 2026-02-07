@@ -1,5 +1,6 @@
 // FILE: App.js
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+
+import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
 import {
   Alert,
   SafeAreaView,
@@ -21,19 +22,20 @@ import AmountEntryScreen from './components/Terminal/AmountEntryScreen';
 import TipScreen from './components/Tip/TipScreen';
 import CheckoutScreen from './components/Checkout/CheckoutScreen';
 import ReceiptScreen from './components/Receipt/ReceiptScreen';
+import FixedTipScreen from './components/Tip/FixedTipScreen';
+
+// ✅ NEW: Store Sales screen
+import StoreSalesScreen from './components/Sales/StoreSalesScreen';
 
 import PaymentTerminal from './components/PaymentTerminal';
 import {themes} from './components/theme/agTheme';
-import FixedTipScreen from './components/Tip/FixedTipScreen';
 
 const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
-// ✅ Verify user role endpoint (pk only)
 const VERIFY_ME_URL =
-  'https://omrb8dwy0j.execute-api.us-east-2.amazonaws.com/prod/VerifyMe';
+  'https://omrb8dwy0j.execute-api.us-east-2.amazonaws.com/prod/VerifyMe'; // ⚠️ keep your exact URL if different
 
-// --- Tax/Fee constants (NYC) ---
 const TAX_RATE = 0.0885; // 8.85%
 
 function safeJsonParse(x) {
@@ -44,69 +46,17 @@ function safeJsonParse(x) {
   }
 }
 
-/**
- * ✅ StripeTerminalProvider expects:
- * tokenProvider = async () => string
- * NOT an object.
- */
-async function fetchConnectionToken() {
-  console.log('🔥 tokenProvider CALLED (about to fetch connection token)');
-  console.log('🔐 connection_token => POST:', CONNECTION_TOKEN_URL);
-
-  const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
-  const text = await resp.text();
-
-  console.log('🔥 tokenProvider RESP:', resp.status, text);
-
-  if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
-
-  // supports both:
-  // 1) { secret: "..." }
-  // 2) { body: "{\"secret\":\"...\"}" }
-  // 3) { body: { secret: "..." } }
-  let outer = safeJsonParse(text);
-  if (!outer) outer = {};
-
-  let data = outer;
-  if (outer?.body && typeof outer.body === 'string') {
-    const inner = safeJsonParse(outer.body);
-    if (inner) data = inner;
-  } else if (outer?.body && typeof outer.body === 'object') {
-    data = outer.body;
-  }
-
-  const secret = data?.secret || null;
-
-  if (!secret || typeof secret !== 'string') {
-    throw new Error(
-      `Missing connection token. outer=${JSON.stringify(
-        outer,
-      )} data=${JSON.stringify(data)}`,
-    );
-  }
-
-  console.log('✅ connection token length:', secret.length);
-  return secret;
-}
-
 function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
-/**
- * Service fee rule:
- * - fee = (2.7% of base + $0.05) + extra
- * - extra ramps from $0.05 at $0 total to $0.50 at $100 total
- * - minimum enforced: at least $0.05
- */
 function calcServiceFeeCents(baseCents) {
   const base = Math.max(0, Number(baseCents || 0));
-
   const percentPart = Math.round(base * 0.027);
   const fixedPart = 5;
 
-  const capped = Math.min(base, 10000); // $100
-  const extra = 5 + Math.round((capped / 10000) * 45); // 5..50
+  const capped = Math.min(base, 10000);
+  const extra = 5 + Math.round((capped / 10000) * 45);
 
   const fee = percentPart + fixedPart + extra;
   return Math.max(5, fee);
@@ -129,7 +79,6 @@ async function readAgpayAuthToken() {
       if (session?.token) return session.token;
     }
 
-    console.log('readAgpayAuthToken: no token found');
     return null;
   } catch (e) {
     console.log('readAgpayAuthToken error:', e);
@@ -142,14 +91,10 @@ async function readAgpaySession() {
     const sessCreds = await Keychain.getGenericPassword({
       service: 'agpaySession',
     });
-    if (sessCreds?.password) {
-      return JSON.parse(sessCreds.password);
-    }
+    if (sessCreds?.password) return JSON.parse(sessCreds.password);
 
     const internet = await Keychain.getInternetCredentials('agpayAuth');
-    if (internet?.password) {
-      return JSON.parse(internet.password);
-    }
+    if (internet?.password) return JSON.parse(internet.password);
 
     return null;
   } catch (e) {
@@ -227,10 +172,9 @@ async function verifyUserRoleByPk(pk) {
   const safePk = normalizeUserPk(pk);
   if (!safePk) throw new Error('Missing pk for VerifyMe');
 
-  console.log('✅ VerifyMe => pk:', safePk);
-
   let resp;
   let text = '';
+
   try {
     resp = await fetch(VERIFY_ME_URL, {
       method: 'POST',
@@ -238,7 +182,6 @@ async function verifyUserRoleByPk(pk) {
       body: JSON.stringify({pk: safePk}),
     });
     text = await resp.text();
-    console.log('✅ VerifyMe => HTTP:', resp.status, text);
   } catch (e) {
     console.log('VerifyMe POST fetch error:', e);
   }
@@ -248,7 +191,6 @@ async function verifyUserRoleByPk(pk) {
       const url = `${VERIFY_ME_URL}?pk=${encodeURIComponent(safePk)}`;
       const r2 = await fetch(url, {method: 'GET'});
       const t2 = await r2.text();
-      console.log('✅ VerifyMe (GET fallback) => HTTP:', r2.status, t2);
       resp = r2;
       text = t2;
     } catch (e) {
@@ -272,11 +214,7 @@ async function verifyUserRoleByPk(pk) {
   const role =
     data?.user_role || data?.userRole || data?.role || data?.account_role || '';
 
-  return {
-    pk: data?.pk || safePk,
-    user_role: String(role || '').trim(),
-    raw: data,
-  };
+  return {pk: data?.pk || safePk, user_role: String(role || '').trim()};
 }
 
 export default function App() {
@@ -284,7 +222,6 @@ export default function App() {
   const startingCardRef = useRef(false);
 
   const [booting, setBooting] = useState(true);
-
   const [screen, setScreen] = useState('LOGIN');
   const [session, setSession] = useState(null);
 
@@ -302,7 +239,6 @@ export default function App() {
 
   const [themeMode, setThemeMode] = useState('dark');
   const theme = useMemo(() => themes[themeMode] || themes.dark, [themeMode]);
-
   const toggleTheme = () =>
     setThemeMode(m => (m === 'dark' ? 'light' : 'dark'));
 
@@ -325,13 +261,9 @@ export default function App() {
   async function gateVerifyOrLogout(where = 'unknown') {
     try {
       const pk = await readUserPkFromKeychain();
-      if (!pk) {
-        console.log(`VerifyMe(${where}) => missing pk, skipping gate`);
-        return {ok: true, skipped: true};
-      }
+      if (!pk) return {ok: true, skipped: true};
 
       const res = await verifyUserRoleByPk(pk);
-      console.log(`VerifyMe(${where}) => user_role:`, res?.user_role);
 
       if (String(res?.user_role || '').toLowerCase() === 'banned') {
         Alert.alert(
@@ -344,26 +276,44 @@ export default function App() {
 
       return {ok: true, role: res?.user_role || ''};
     } catch (e) {
-      console.log(`VerifyMe(${where}) error:`, e);
       return {ok: true, error: String(e?.message || e)};
     }
   }
+
+  const tokenProvider = useCallback(async () => {
+    const resp = await fetch(CONNECTION_TOKEN_URL, {method: 'POST'});
+    const text = await resp.text();
+
+    if (!resp.ok) throw new Error(`Connection token HTTP ${resp.status}`);
+
+    let outer = safeJsonParse(text);
+    if (!outer) outer = {};
+
+    let data = outer;
+    if (outer?.body && typeof outer.body === 'string') {
+      const inner = safeJsonParse(outer.body);
+      if (inner) data = inner;
+    } else if (outer?.body && typeof outer.body === 'object') {
+      data = outer.body;
+    }
+
+    const secret = data?.secret;
+    if (!secret || typeof secret !== 'string') {
+      throw new Error(`Missing connection token secret. raw=${text}`);
+    }
+
+    return secret;
+  }, []);
 
   // ✅ BOOT
   useEffect(() => {
     (async () => {
       try {
-        console.log('BOOT => checking saved auth + selection...');
-
         const token = await readAgpayAuthToken();
         const sel = await readAgpaySelection();
         const sess = await readAgpaySession();
 
-        console.log('BOOT => token exists:', !!token);
-        console.log('BOOT => selection:', sel);
-
         if (token) await clearAgpayComment();
-
         if (sess?.token) setSession({token: sess.token});
 
         if (token) {
@@ -380,7 +330,6 @@ export default function App() {
         else if (token) setScreen('CORP');
         else setScreen('LOGIN');
       } catch (e) {
-        console.log('BOOT => error:', e);
         setScreen('LOGIN');
       } finally {
         setBooting(false);
@@ -408,16 +357,12 @@ export default function App() {
     if (!token) return Alert.alert('Login failed');
 
     setSession({token});
-
     const gate = await gateVerifyOrLogout('LOGIN');
     if (!gate.ok) return;
 
     go('CORP');
   };
 
-  const handleLogout = () => hardLogoutToLogin();
-
-  // ---------- AMOUNT ----------
   const handleAmountDone = payload => {
     const amountCentsRaw = payload?.amountCents;
     const amountDollarsRaw =
@@ -434,8 +379,6 @@ export default function App() {
       Number(amountDollarsRaw) > 0
     ) {
       subtotalCents = Math.round(Number(amountDollarsRaw) * 100);
-    } else {
-      subtotalCents = 0;
     }
 
     const taxCents = Math.round(subtotalCents * TAX_RATE);
@@ -458,7 +401,6 @@ export default function App() {
     go('FIXED_TIP');
   };
 
-  // ---------- TIP ----------
   const handleTipDone = ({tipCents}) => {
     const prev = chargeData || {
       subtotalCents: 0,
@@ -489,7 +431,6 @@ export default function App() {
     go('CHECKOUT');
   };
 
-  // ---------- CASH ----------
   const handleCashReceipt = data => {
     setReceipt({
       ...(data || {}),
@@ -501,7 +442,6 @@ export default function App() {
     go('RECEIPT');
   };
 
-  // ---------- CARD ----------
   const startCardFlowNow = async () => {
     if (startingCardRef.current) return;
     startingCardRef.current = true;
@@ -515,19 +455,14 @@ export default function App() {
 
       const ready = await waitForPaymentRefReady();
       if (!ready) {
-        Alert.alert(
-          'Preparing reader',
-          'Please wait a moment, then try again.',
-        );
+        Alert.alert('Preparing reader', 'Please wait a moment and try again.');
         return;
       }
 
       await paymentRef.current.ensureInit?.();
 
       const isConnected = await paymentRef.current.isReaderConnected?.();
-      if (!isConnected) {
-        await paymentRef.current.connectReaderFlow?.();
-      }
+      if (!isConnected) await paymentRef.current.connectReaderFlow?.();
 
       await paymentRef.current.startCardPayment?.();
     } catch (e) {
@@ -545,15 +480,10 @@ export default function App() {
   };
 
   const handlePaymentSuccess = async receiptPayload => {
-    try {
-      setReceipt(receiptPayload);
-    } catch (e) {
-      console.log('handlePaymentSuccess error:', e);
-    } finally {
-      setStripeEnabled(false);
-      setIsReaderBusy(false);
-      go('RECEIPT');
-    }
+    setReceipt(receiptPayload);
+    setStripeEnabled(false);
+    setIsReaderBusy(false);
+    go('RECEIPT');
   };
 
   // ---------- UI ----------
@@ -584,7 +514,7 @@ export default function App() {
           theme={theme}
           themeMode={themeMode}
           onToggleTheme={toggleTheme}
-          onLogout={handleLogout}
+          onLogout={hardLogoutToLogin}
           onCorporatePicked={() => go('STORE')}
         />
       );
@@ -596,7 +526,7 @@ export default function App() {
           themeMode={themeMode}
           onToggleTheme={toggleTheme}
           onBack={() => go('CORP')}
-          onLogout={handleLogout}
+          onLogout={hardLogoutToLogin}
           onStorePicked={() => go('TERMINAL')}
         />
       );
@@ -607,7 +537,8 @@ export default function App() {
           theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
-          readerStatus={{connected: false, label: ''}}
+          onGoToSales={() => go('SALES')} // ✅ NEW
+          readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
           terminalStatusLine={terminalStatusLine}
@@ -645,6 +576,10 @@ export default function App() {
         />
       );
 
+    // ✅ NEW: Sales placeholder screen route
+    if (screen === 'SALES')
+      return <StoreSalesScreen theme={theme} onBack={() => go('TERMINAL')} />;
+
     if (screen === 'FIXED_TIP')
       return (
         <FixedTipScreen
@@ -680,14 +615,6 @@ export default function App() {
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
-          onCancel={async () => {
-            setReceipt(null);
-            setChargeData(null);
-            setStripeEnabled(false);
-            setIsReaderBusy(false);
-            setTerminalStatusLine('');
-            go('TERMINAL');
-          }}
           onCashConfirm={handleCashReceipt}
           onCardConfirm={handleCardConfirm}
           isBusy={isReaderBusy}
@@ -715,13 +642,15 @@ export default function App() {
   })();
 
   const showFloatingToggle = screen !== 'CORP' && screen !== 'STORE';
-
   const shouldRenderPaymentTerminal =
     !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
+  const providerKey = stripeEnabled ? 'stripe_on' : 'stripe_off';
+
   return (
     <StripeTerminalProvider
-      tokenProvider={fetchConnectionToken}
+      key={providerKey}
+      tokenProvider={tokenProvider}
       logLevel="verbose">
       <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
         <StatusBar translucent backgroundColor="transparent" />
@@ -757,7 +686,7 @@ export default function App() {
             currency={chargeData?.currency || 'usd'}
             amountLabel={chargeData?.totalLabel || null}
             breakdown={chargeData || null}
-            onReaderStatusChange={() => {}}
+            onReaderStatusChange={setReaderStatus}
             onPaymentSuccess={handlePaymentSuccess}
             onTerminalStatusLine={setTerminalStatusLine}
           />
