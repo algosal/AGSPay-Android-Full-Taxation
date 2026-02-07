@@ -1,18 +1,18 @@
-# 💳 AGPay — Android (Tap to Pay)
+# 💳 AGPay — Android Tablet (Tap to Pay)
 
-🚀 **Fully working AGPay Android application** for **Android phones with NFC**, supporting **Tap to Pay** with **contactless credit & debit cards**.
+🚧 **AGPay Android Tablet build** for **NFC-enabled Android tablets**, supporting **Tap to Pay** with contactless credit & debit cards.
 
-This repository contains the **stable, production-ready Android phone build** of AGPay.
+This repository contains the **tablet-focused variant** of AGPay. The core payment flow is functional, with **ongoing device-specific tuning** in progress.
 
 ---
 
-## ✨ Key Features
+## ✨ What Works Today
 
-✅ **Tap to Pay on Android**
+✅ **Tap to Pay on Android (Tablet)**
 
 - Uses built-in **NFC hardware**
-- Accepts contactless **Visa, Mastercard, Amex**, etc.
-- No external reader required (on supported devices)
+- Accepts contactless **credit & debit cards**
+- Stripe Terminal integration active
 
 ✅ **Complete Checkout Flow**
 
@@ -25,35 +25,42 @@ Amount → Tip → Payment Method → Receipt
 ✅ **Store Terminal Mode**
 
 - Terminal screen can remain open indefinitely
-- Safe to connect / disconnect reader at any time
-- Designed for real-world retail & vendor usage
+- Reader connect / disconnect supported
+- Designed for counter-style tablet usage
 
 ✅ **Receipts**
 
 - 📧 Email receipts supported
-- 🧾 Receipt breakdown includes:
+- 🧾 Full breakdown:
   - Subtotal
   - Sales tax
   - Service fee
   - Tip
   - Total
 
-✅ **Android-First UX**
+---
 
-- Optimized for **phones**, not tablets
-- Touch-first layout
-- Works on real devices (not emulator-only)
+## ⚠️ Known Tablet-Specific Issue (In Progress)
+
+🚧 **NFC tag read behavior on tablets**
+
+- Some Android tablets handle NFC tag discovery differently than phones
+- Occasional inconsistency when reading Tap to Pay card tags
+- Being actively tested and adjusted on real hardware
+
+> A tablet device is scheduled for hands-on debugging and tuning.  
+> Fixes will be applied before backend expansion (DynamoDB + Lambda work).
 
 ---
 
 ## 📱 Device Requirements
 
-- **Android phone with NFC**
+- **Android tablet with NFC**
 - NFC **enabled** in system settings
 - Internet connection (auth + payment processing)
 - Supported Android version per Stripe Tap to Pay requirements
 
-> ⚠️ Tablets are **not guaranteed** unless explicitly supported in a separate build or branch.
+> ⚠️ Not all tablets implement NFC identically. Device compatibility testing is ongoing.
 
 ---
 
@@ -62,7 +69,7 @@ Amount → Tip → Payment Method → Receipt
 - **React Native**
 - **Stripe Terminal (Tap to Pay on Android)**
 - **NFC-based contactless payments**
-- Secure backend APIs for auth, verification, and receipts
+- Backend APIs (auth, verification, receipts)
 
 ---
 
@@ -76,9 +83,7 @@ npm install
 
 ---
 
-## ▶️ Run on Android
-
-Using CLI:
+## ▶️ Run on Android Tablet
 
 ```bash
 npx react-native run-android
@@ -87,42 +92,47 @@ npx react-native run-android
 Or:
 
 - Open the `android/` folder in **Android Studio**
-- Build & run on a **physical NFC-enabled device**
+- Build & run on a **physical NFC-enabled tablet**
+
+> ⚠️ Emulator will NOT support Tap to Pay.
 
 ---
 
 ## 🧪 Testing Notes
 
-- Emulator **will not** support Tap to Pay
-- Use a **real Android phone with NFC**
-- Ensure NFC is turned ON before launching the app
+- Always test on **real hardware**
+- Ensure NFC is enabled before launching the app
+- Keep device unlocked during Tap to Pay interactions
 
 ---
 
-## 🔐 Security & Compliance
+## 🗺️ Roadmap (Short-Term)
 
-- Secure authentication flow
-- Role verification enforced via backend
-- No sensitive card data stored on device
-- Payments handled via Stripe’s compliant infrastructure
+- 🔧 Fix tablet NFC tag detection consistency
+- 🧪 Validate Tap to Pay flow across tablet models
+- 🧠 Then proceed to:
+
+  - DynamoDB transaction aggregation
+  - Sales-of-the-day Lambda
+  - Backend optimizations
 
 ---
 
 ## 📦 Repository Status
 
-✅ **Stable**
-✅ **Production-ready**
-✅ **Actively used on Android phones with NFC**
-
-This repo represents the **current, working Android phone implementation** of AGPay with Tap to Pay.
+🟡 **Functional, under active tablet tuning**
+🟢 Core payment flow working
+🔧 Device-specific NFC adjustments in progress
 
 ---
 
 ## 🏁 Summary
 
-**AGPay Android** enables modern, readerless, contactless payments directly on supported Android phones — delivering a clean terminal experience, secure checkout flow, and professional receipts.
+This repository represents the **Android Tablet build of AGPay**, sharing the same payment architecture as the phone version, with additional work underway to accommodate tablet-specific NFC behavior.
 
-💳 Tap. Pay. Done.
+Once NFC tuning is finalized, backend expansion will resume.
+
+💳 Bigger screen. Same secure payments.
 
 ```
 
