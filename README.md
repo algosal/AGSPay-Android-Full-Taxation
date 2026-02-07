@@ -1,4 +1,3 @@
-````md
 # AGPay (Android)
 
 Fully working AGPay Android application for **Android cell phones with NFC chips**, supporting **Tap to Pay** with **contactless credit/debit cards**.
@@ -24,6 +23,7 @@ Fully working AGPay Android application for **Android cell phones with NFC chips
 ```bash
 npm install
 ```
+
 ````
 
 ## Run (Android)
@@ -46,3 +46,4 @@ Or open the `android/` folder in Android Studio and run the app.
 ```
 
 ```
+````
