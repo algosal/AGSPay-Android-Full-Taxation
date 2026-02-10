@@ -34,7 +34,7 @@ function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
-// America/New_York date in YYYY-MM-DD
+// America/New_York date in YYYY-MM-DD (for backend query param)
 function nycDateYYYYMMDD(d = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -54,6 +54,34 @@ function nycDateYYYYMMDD(d = new Date()) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// America/New_York long date label: "February 9th, 2026"
+function formatNYCDateLong(d = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }).formatToParts(d);
+
+    const month = parts.find(p => p.type === 'month')?.value;
+    const day = parts.find(p => p.type === 'day')?.value;
+    const year = parts.find(p => p.type === 'year')?.value;
+
+    const dayNum = Number(day);
+    if (month && dayNum && year) return `${month} ${ordinal(dayNum)}, ${year}`;
+  } catch {}
+
+  const month = d.toLocaleString('en-US', {month: 'long'});
+  return `${month} ${ordinal(d.getDate())}, ${d.getFullYear()}`;
 }
 
 async function readAgpaySelection() {
@@ -117,6 +145,7 @@ export default function StoreSalesScreen({theme, onBack}) {
   const [data, setData] = useState(null);
 
   const today = useMemo(() => nycDateYYYYMMDD(new Date()), []);
+  const todayLabel = useMemo(() => formatNYCDateLong(new Date()), []);
 
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
@@ -142,10 +171,10 @@ export default function StoreSalesScreen({theme, onBack}) {
     };
   }, []);
 
+  // ✅ Store name only (no corporation)
   const subtitle = useMemo(() => {
-    const c = sel?.corporateName ? String(sel.corporateName) : 'Corporate';
     const st = sel?.storeName ? String(sel.storeName) : 'Store';
-    return `${c} · ${st}`;
+    return st;
   }, [sel]);
 
   const corporateRef = useMemo(
@@ -212,7 +241,6 @@ export default function StoreSalesScreen({theme, onBack}) {
     const d = data && typeof data === 'object' ? data : {};
     const tot = d.totals && typeof d.totals === 'object' ? d.totals : {};
 
-    // If later you add transactions, support a few names.
     const txns =
       d.txns ||
       d.transactions ||
@@ -228,7 +256,7 @@ export default function StoreSalesScreen({theme, onBack}) {
       taxCents: Number(tot.taxCents ?? 0),
       tipCents: Number(tot.tipCents ?? 0),
       serviceFeeCents: Number(tot.serviceFeeCents ?? 0),
-      albaFeeCents: Number(tot.albaFeeCents ?? 0),
+      // ✅ albaFeeCents removed from UI
       totalCents: Number(tot.totalCents ?? 0),
       payoutAmountCents: Number(tot.payoutAmountCents ?? 0),
       list,
@@ -253,9 +281,27 @@ export default function StoreSalesScreen({theme, onBack}) {
 
           <View style={{flex: 1, alignItems: 'center'}}>
             <Text style={[styles.title, {color: t.text}]}>Store Sales</Text>
-            <Text style={[styles.subtitle, {color: t.muted}]}>{subtitle}</Text>
-            <Text style={[styles.subtitle, {color: t.muted}]}>
-              Today: {today}
+            <Text
+              style={[
+                styles.subtitle,
+                {
+                  color: t.gold,
+                  fontWeight: '900',
+                  marginTop: 4,
+                },
+              ]}>
+              {subtitle} Location
+            </Text>
+            <Text
+              style={[
+                styles.subtitle,
+                {
+                  color: t.gold, // 👈 Alba gold
+                  fontWeight: '900', // 👈 bold
+                  marginTop: 6,
+                },
+              ]}>
+              {todayLabel}
             </Text>
           </View>
 
@@ -348,14 +394,10 @@ export default function StoreSalesScreen({theme, onBack}) {
                   </Text>
                 </View>
 
-                <View style={[styles.kv, {borderColor: t.border}]}>
-                  <Text style={[styles.k, {color: t.muted}]}>Alba Fee</Text>
-                  <Text style={[styles.v, {color: t.text}]}>
-                    {centsToMoney(totals.albaFeeCents)}
-                  </Text>
-                </View>
+                {/* ✅ Alba Fee removed */}
 
-                <View style={[styles.kv, {borderColor: t.border}]}>
+                {/* ✅ Last cell full width */}
+                <View style={[styles.kvFull, {borderColor: t.border}]}>
                   <Text style={[styles.k, {color: t.muted}]}>Payout</Text>
                   <Text style={[styles.v, {color: t.text}]}>
                     {centsToMoney(totals.payoutAmountCents)}
@@ -469,6 +511,12 @@ const styles = StyleSheet.create({
   },
   kv: {
     width: '48%',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+  },
+  kvFull: {
+    width: '100%',
     borderWidth: 1,
     borderRadius: 12,
     padding: 10,
