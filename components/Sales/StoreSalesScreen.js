@@ -1,10 +1,16 @@
 // FILE: components/Sales/StoreSalesScreen.js
 //
-// Shows "Sales of the Day" for the currently selected store.
-// Calls:
-// GET https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/todays-sales
-//   ?corporateRef=...&storeRef=...&date=YYYY-MM-DD
-// Header: Authorization: <RAW_JWT_NO_BEARER>
+// Android Store Sales screen (same vibe as Terminal screens)
+// ✅ Keeps existing Sales fetch
+// ✅ Adds "Email Report" button that calls your backend:
+//    POST https://agspay.us/email/store_sales.php
+//    Header: X-AGPAY-KEY
+//
+// Recipients logic (frontend):
+// - Owner email (from Keychain session)
+// - Store contact email (from agpaySelection store object, if present)
+// - Admin email: agspay@yahoo.com
+// Backend will also send the separate DARK test copy to pfc.salman@gmail.com (per your PHP)
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
@@ -14,12 +20,22 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import {pressFX, androidRipple} from '../ui/pressFX';
 
 const SALES_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/todays-sales';
+
+// ✅ Store sales email endpoint
+const EMAIL_SALES_URL = 'https://agspay.us/email/store_sales.php';
+
+// ✅ TEMP key (move to env later)
+const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
+
+// ✅ Always include admin
+const ADMIN_EMAIL = 'agspay@yahoo.com';
 
 // ---------------------- helpers ----------------------
 function safeJsonParse(x) {
@@ -32,6 +48,12 @@ function safeJsonParse(x) {
 
 function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
+}
+
+function isValidEmail(email) {
+  const e = String(email || '').trim();
+  if (!e) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
 // America/New_York date in YYYY-MM-DD (for backend query param)
@@ -97,7 +119,6 @@ async function readAgpaySelection() {
 
 async function readAgpayAuthToken() {
   try {
-    // 1) preferred generic store (if you saved it this way)
     const tokenCreds = await Keychain.getGenericPassword({
       service: 'agpayAuthToken',
     });
@@ -105,7 +126,6 @@ async function readAgpayAuthToken() {
       return tokenCreds.password;
     }
 
-    // 2) fallback internet session JSON {token: "..."}
     const internet = await Keychain.getInternetCredentials('agpayAuth');
     if (internet?.password) {
       const parsed = safeJsonParse(internet.password);
@@ -116,6 +136,31 @@ async function readAgpayAuthToken() {
     console.log('readAgpayAuthToken error:', e);
     return null;
   }
+}
+
+// ✅ Logged-in owner email (Keychain) – tries common saved session shapes
+async function readLoggedInEmailFromKeychain() {
+  const servicesToTry = ['agpaySession', 'agpayAuth'];
+
+  for (const svc of servicesToTry) {
+    try {
+      const creds = await Keychain.getInternetCredentials(svc);
+      const raw = creds?.password ? String(creds.password).trim() : '';
+      if (!raw) continue;
+
+      const obj = safeJsonParse(raw);
+      if (!obj || typeof obj !== 'object') continue;
+
+      const e1 = obj.email;
+      const e2 = obj.profile?.email;
+      const e3 = obj.session?.email;
+
+      const email = String(e1 || e2 || e3 || '').trim();
+      if (email && isValidEmail(email)) return email;
+    } catch {}
+  }
+
+  return '';
 }
 
 // Normalize common backend shapes:
@@ -144,6 +189,10 @@ export default function StoreSalesScreen({theme, onBack}) {
   const [err, setErr] = useState('');
   const [data, setData] = useState(null);
 
+  // ✅ For email button label/validation
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [emailSending, setEmailSending] = useState(false);
+
   const today = useMemo(() => nycDateYYYYMMDD(new Date()), []);
   const todayLabel = useMemo(() => formatNYCDateLong(new Date()), []);
 
@@ -171,6 +220,19 @@ export default function StoreSalesScreen({theme, onBack}) {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const em = await readLoggedInEmailFromKeychain();
+      const clean = String(em || '').trim();
+      console.log('📧 StoreSalesScreen ownerEmail from Keychain:', clean);
+      if (mounted) setOwnerEmail(clean);
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   // ✅ Store name only (no corporation)
   const subtitle = useMemo(() => {
     const st = sel?.storeName ? String(sel.storeName) : 'Store';
@@ -182,6 +244,17 @@ export default function StoreSalesScreen({theme, onBack}) {
     [sel],
   );
   const storeRef = useMemo(() => String(sel?.storeRef || '').trim(), [sel]);
+
+  // ✅ Store contact email (from selection store object)
+  const storeContactEmail = useMemo(() => {
+    const e =
+      sel?.email || // your logs show `email` on store object
+      sel?.storeEmail ||
+      sel?.store_contact_email ||
+      sel?.contactEmail ||
+      '';
+    return String(e || '').trim();
+  }, [sel]);
 
   const fetchSales = useCallback(async () => {
     setErr('');
@@ -256,12 +329,98 @@ export default function StoreSalesScreen({theme, onBack}) {
       taxCents: Number(tot.taxCents ?? 0),
       tipCents: Number(tot.tipCents ?? 0),
       serviceFeeCents: Number(tot.serviceFeeCents ?? 0),
-      // ✅ albaFeeCents removed from UI
       totalCents: Number(tot.totalCents ?? 0),
       payoutAmountCents: Number(tot.payoutAmountCents ?? 0),
       list,
     };
   }, [data]);
+
+  const handleEmailReport = useCallback(async () => {
+    try {
+      if (emailSending) return;
+
+      // refresh owner on demand (so it stays accurate)
+      const em = (await readLoggedInEmailFromKeychain()) || ownerEmail || '';
+      const owner = String(em || '').trim();
+      const storeEmail = String(storeContactEmail || '').trim();
+
+      const recipientsRaw = [owner, storeEmail, ADMIN_EMAIL]
+        .map(x => String(x || '').trim())
+        .filter(Boolean);
+
+      // validate + dedupe (keep stable)
+      const recipients = Array.from(
+        new Set(recipientsRaw.filter(isValidEmail).map(x => x.toLowerCase())),
+      );
+
+      console.log('📧 Email button pressed → recipients:', recipients);
+
+      if (!recipients.length) {
+        Alert.alert(
+          'Email not available',
+          'We couldn’t find a valid owner / store email on this device.\n\nPlease log in again and try once more.',
+        );
+        return;
+      }
+
+      // Backend requires `to` (owner) + optional storeEmail
+      const payload = {
+        to: recipients[0], // primary
+        storeEmail: storeEmail, // backend will include if different + valid
+        storeName: subtitle || 'Store',
+        dateLabel: todayLabel,
+        timezone: 'America/New_York',
+        totals: {
+          count: totals.count,
+          subtotalCents: totals.subtotalCents,
+          taxCents: totals.taxCents,
+          tipCents: totals.tipCents,
+          serviceFeeCents: totals.serviceFeeCents,
+          totalCents: totals.totalCents,
+          payoutAmountCents: totals.payoutAmountCents,
+        },
+      };
+
+      console.log('📧 SALES EMAIL payload:', JSON.stringify(payload));
+
+      setEmailSending(true);
+
+      const resp = await fetch(EMAIL_SALES_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AGPAY-KEY': AGPAY_EMAIL_KEY,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await resp.text();
+      console.log('📧 SALES EMAIL HTTP:', resp.status, text);
+
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text}`);
+
+      // Humble confirmation (clear + premium)
+      Alert.alert(
+        'Report sent',
+        `We emailed today’s sales summary to:\n\n• Owner\n• Store contact\n• AGSPay admin\n\n(And a developer test copy was delivered.)`,
+      );
+    } catch (e) {
+      console.log('EMAIL SALES error:', e);
+      Alert.alert(
+        'Email failed',
+        'We couldn’t send the report right now.\n\nPlease try again in a moment.',
+      );
+    } finally {
+      setEmailSending(false);
+    }
+  }, [
+    emailSending,
+    ownerEmail,
+    storeContactEmail,
+    subtitle,
+    todayLabel,
+    totals,
+  ]);
 
   return (
     <View style={[styles.root, {backgroundColor: t.bg}]}>
@@ -284,22 +443,14 @@ export default function StoreSalesScreen({theme, onBack}) {
             <Text
               style={[
                 styles.subtitle,
-                {
-                  color: t.gold,
-                  fontWeight: '900',
-                  marginTop: 4,
-                },
+                {color: t.gold, fontWeight: '900', marginTop: 4},
               ]}>
               {subtitle} Location
             </Text>
             <Text
               style={[
                 styles.subtitle,
-                {
-                  color: t.gold, // 👈 Alba gold
-                  fontWeight: '900', // 👈 bold
-                  marginTop: 6,
-                },
+                {color: t.gold, fontWeight: '900', marginTop: 6},
               ]}>
               {todayLabel}
             </Text>
@@ -394,18 +545,16 @@ export default function StoreSalesScreen({theme, onBack}) {
                   </Text>
                 </View>
 
-                {/* ✅ Alba Fee removed */}
-
-                {/* ✅ Last cell full width */}
                 <View style={[styles.kvFull, {borderColor: t.border}]}>
-                  <Text style={[styles.k, {color: t.muted}]}>Payout</Text>
+                  <Text style={[styles.k, {color: t.muted}]}>
+                    Payout Expected
+                  </Text>
                   <Text style={[styles.v, {color: t.text}]}>
                     {centsToMoney(totals.payoutAmountCents)}
                   </Text>
                 </View>
               </View>
 
-              {/* Optional transactions list if/when backend returns it */}
               {totals.list.length > 0 ? (
                 <>
                   <View style={[styles.divider, {backgroundColor: t.border}]} />
@@ -454,6 +603,25 @@ export default function StoreSalesScreen({theme, onBack}) {
             </>
           ) : null}
         </View>
+
+        {/* ✅ EMAIL BUTTON (Terminal-style gold) */}
+        <Pressable
+          onPress={handleEmailReport}
+          disabled={emailSending}
+          {...androidRipple('rgba(0,0,0,0.12)')}
+          style={({pressed}) => [
+            styles.primaryBtn,
+            {backgroundColor: t.gold, opacity: emailSending ? 0.7 : 1},
+            pressFX({pressed}),
+          ]}>
+          <Text style={[styles.primaryText, {color: '#020617'}]}>
+            {emailSending ? 'Sending…' : 'Email Store Sales'}
+          </Text>
+        </Pressable>
+
+        <Text style={[styles.note, {color: t.muted}]}>
+          Reports go to owner, store contact, and AGSPay admin.
+        </Text>
       </View>
     </View>
   );
@@ -532,4 +700,15 @@ const styles = StyleSheet.create({
   },
   txnAmt: {fontSize: 16, fontWeight: '900'},
   txnMeta: {marginTop: 4, fontSize: 12, fontWeight: '800'},
+
+  primaryBtn: {
+    marginTop: 12,
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    width: '100%',
+  },
+  primaryText: {fontSize: 16, fontWeight: '900'},
+
+  note: {marginTop: 10, fontSize: 12, fontWeight: '700', textAlign: 'center'},
 });
