@@ -1,18 +1,12 @@
 // FILE: components/Sales/StoreSalesScreen.js
 //
-// Android Store Sales screen (same vibe as Terminal screens)
-// ✅ Keeps existing Sales fetch
-// ✅ Adds "Email Report" button that calls your backend:
-//    POST https://agspay.us/email/store_sales.php
-//    Header: X-AGPAY-KEY
-//
-// Recipients logic (frontend):
-// - Owner email (from Keychain session)
-// - Store contact email (from agpaySelection store object, if present)
-// - Admin email: agspay@yahoo.com
-// Backend will also send the separate DARK test copy to pfc.salman@gmail.com (per your PHP)
+// ✅ 7 taps on center header => logout (no button)
+// ✅ Logs every tap
+// ✅ Proper Keychain clearing for your saved keys (matches Login.js)
+// ✅ Calls onLogout() (preferred) so app returns to Login screen
+//    If onLogout not provided, falls back to onBack()
 
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -28,13 +22,8 @@ import {pressFX, androidRipple} from '../ui/pressFX';
 const SALES_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/todays-sales';
 
-// ✅ Store sales email endpoint
 const EMAIL_SALES_URL = 'https://agspay.us/email/store_sales.php';
-
-// ✅ TEMP key (move to env later)
 const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
-
-// ✅ Always include admin
 const ADMIN_EMAIL = 'agspay@yahoo.com';
 
 // ---------------------- helpers ----------------------
@@ -56,7 +45,6 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
-// America/New_York date in YYYY-MM-DD (for backend query param)
 function nycDateYYYYMMDD(d = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -84,7 +72,6 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-// America/New_York long date label: "February 9th, 2026"
 function formatNYCDateLong(d = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -138,14 +125,13 @@ async function readAgpayAuthToken() {
   }
 }
 
-// ✅ Logged-in owner email (Keychain) – tries common saved session shapes
 async function readLoggedInEmailFromKeychain() {
   const servicesToTry = ['agpaySession', 'agpayAuth'];
 
   for (const svc of servicesToTry) {
     try {
-      const creds = await Keychain.getInternetCredentials(svc);
-      const raw = creds?.password ? String(creds.password).trim() : '';
+      const internet = await Keychain.getInternetCredentials(svc);
+      const raw = internet?.password ? String(internet.password).trim() : '';
       if (!raw) continue;
 
       const obj = safeJsonParse(raw);
@@ -160,13 +146,18 @@ async function readLoggedInEmailFromKeychain() {
     } catch {}
   }
 
+  // Fallback: generic session
+  try {
+    const gp = await Keychain.getGenericPassword({service: 'agpaySession'});
+    const raw = gp?.password ? String(gp.password).trim() : '';
+    const obj = safeJsonParse(raw);
+    const email = String(obj?.email || obj?.profile?.email || '').trim();
+    if (email && isValidEmail(email)) return email;
+  } catch {}
+
   return '';
 }
 
-// Normalize common backend shapes:
-// - {statusCode, body:"{...}"}
-// - {body:{...}}
-// - direct object
 function unwrapApiGatewayJson(rawText) {
   const outer = safeJsonParse(rawText);
   if (!outer) return null;
@@ -181,17 +172,63 @@ function unwrapApiGatewayJson(rawText) {
   return outer;
 }
 
+// ✅ Correct reset for your RN Keychain runtime (expects options object)
+async function resetInternetService(service) {
+  try {
+    await Keychain.resetInternetCredentials({server: service});
+    console.log('✅ cleared internet creds:', service);
+  } catch (e) {
+    console.log('❌ resetInternetCredentials error:', service, e);
+  }
+}
+
+async function resetGenericService(service) {
+  try {
+    await Keychain.resetGenericPassword({service});
+    console.log('✅ cleared generic password:', service);
+  } catch (e) {
+    console.log('❌ resetGenericPassword error:', service, e);
+  }
+}
+
+// Clears everything your Login.js writes
+async function doAgpayLogout() {
+  console.log('🔴 LOGOUT: clearing Keychain services...');
+
+  // Internet creds written by Login.js + selection
+  await resetInternetService('agpayAuth');
+  await resetInternetService('agpaySelection');
+
+  // Generic creds written by Login.js
+  await resetGenericService('agpayAuthToken');
+  await resetGenericService('agpaySession');
+
+  // "authed gate" written by Login.js (default service)
+  try {
+    await Keychain.resetGenericPassword(); // no options => default entry
+    console.log('✅ cleared generic password: (default authed gate)');
+  } catch (e) {
+    console.log('❌ resetGenericPassword default error:', e);
+  }
+
+  console.log('🔴 LOGOUT: done');
+}
+
 // ---------------------- component ----------------------
-export default function StoreSalesScreen({theme, onBack}) {
+export default function StoreSalesScreen({theme, onBack, onLogout}) {
   const [sel, setSel] = useState(null);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [data, setData] = useState(null);
 
-  // ✅ For email button label/validation
   const [ownerEmail, setOwnerEmail] = useState('');
   const [emailSending, setEmailSending] = useState(false);
+
+  // ✅ 7-tap logout
+  const tapCountRef = useRef(0);
+  const lastTapMsRef = useRef(0);
+  const isLoggingOutRef = useRef(false);
 
   const today = useMemo(() => nycDateYYYYMMDD(new Date()), []);
   const todayLabel = useMemo(() => formatNYCDateLong(new Date()), []);
@@ -204,9 +241,8 @@ export default function StoreSalesScreen({theme, onBack}) {
     const muted = theme?.muted ?? '#9ca3af';
     const border = theme?.border ?? '#1f2937';
     const gold = theme?.gold ?? '#d4af37';
-    const goldText = theme?.goldText ?? '#020617';
     const danger = theme?.danger ?? '#ef4444';
-    return {bg, card, inputBg, text, muted, border, gold, goldText, danger};
+    return {bg, card, inputBg, text, muted, border, gold, danger};
   }, [theme]);
 
   useEffect(() => {
@@ -233,7 +269,6 @@ export default function StoreSalesScreen({theme, onBack}) {
     };
   }, []);
 
-  // ✅ Store name only (no corporation)
   const subtitle = useMemo(() => {
     const st = sel?.storeName ? String(sel.storeName) : 'Store';
     return st;
@@ -245,16 +280,71 @@ export default function StoreSalesScreen({theme, onBack}) {
   );
   const storeRef = useMemo(() => String(sel?.storeRef || '').trim(), [sel]);
 
-  // ✅ Store contact email (from selection store object)
   const storeContactEmail = useMemo(() => {
     const e =
-      sel?.email || // your logs show `email` on store object
+      sel?.email ||
       sel?.storeEmail ||
       sel?.store_contact_email ||
       sel?.contactEmail ||
       '';
     return String(e || '').trim();
   }, [sel]);
+
+  const performLogout = useCallback(async () => {
+    if (isLoggingOutRef.current) return;
+    isLoggingOutRef.current = true;
+
+    try {
+      await doAgpayLogout();
+
+      // Prefer app-level logout (routes to Login)
+      if (typeof onLogout === 'function') {
+        console.log('🧭 LOGOUT: calling onLogout() to route to Login');
+        onLogout();
+      } else {
+        console.log(
+          '⚠️ LOGOUT: onLogout not provided. Falling back to onBack().',
+        );
+        onBack?.();
+      }
+    } catch (e) {
+      console.log('❌ performLogout error:', e);
+      Alert.alert('Logout failed', 'Could not clear session fully.');
+    } finally {
+      // small delay so taps don’t immediately re-trigger
+      setTimeout(() => {
+        isLoggingOutRef.current = false;
+      }, 600);
+    }
+  }, [onLogout, onBack]);
+
+  const handleCenterHeaderTap = useCallback(() => {
+    const now = Date.now();
+    const gap = now - (lastTapMsRef.current || 0);
+
+    const MAX_GAP_MS = 12000;
+
+    if (gap > MAX_GAP_MS) {
+      tapCountRef.current = 0;
+      console.log('🟠 TAP WINDOW EXPIRED → counter reset (gap ms):', gap);
+    }
+
+    tapCountRef.current += 1;
+    lastTapMsRef.current = now;
+
+    console.log(
+      '🟡 CENTER HEADER TAP → count:',
+      tapCountRef.current,
+      'gap(ms):',
+      gap,
+    );
+
+    if (tapCountRef.current >= 7) {
+      console.log('✅ 7 taps reached → LOGGING OUT NOW');
+      tapCountRef.current = 0;
+      performLogout();
+    }
+  }, [performLogout]);
 
   const fetchSales = useCallback(async () => {
     setErr('');
@@ -280,9 +370,7 @@ export default function StoreSalesScreen({theme, onBack}) {
 
       const resp = await fetch(url, {
         method: 'GET',
-        headers: {
-          Authorization: jwt, // ✅ raw token, no Bearer
-        },
+        headers: {Authorization: jwt},
       });
 
       const text = await resp.text();
@@ -309,7 +397,6 @@ export default function StoreSalesScreen({theme, onBack}) {
     if (corporateRef && storeRef) fetchSales();
   }, [corporateRef, storeRef, fetchSales]);
 
-  // Totals are returned under data.totals
   const totals = useMemo(() => {
     const d = data && typeof data === 'object' ? data : {};
     const tot = d.totals && typeof d.totals === 'object' ? d.totals : {};
@@ -329,6 +416,7 @@ export default function StoreSalesScreen({theme, onBack}) {
       taxCents: Number(tot.taxCents ?? 0),
       tipCents: Number(tot.tipCents ?? 0),
       serviceFeeCents: Number(tot.serviceFeeCents ?? 0),
+      albaFeeCents: Number(tot.albaFeeCents ?? 0),
       totalCents: Number(tot.totalCents ?? 0),
       payoutAmountCents: Number(tot.payoutAmountCents ?? 0),
       list,
@@ -339,7 +427,6 @@ export default function StoreSalesScreen({theme, onBack}) {
     try {
       if (emailSending) return;
 
-      // refresh owner on demand (so it stays accurate)
       const em = (await readLoggedInEmailFromKeychain()) || ownerEmail || '';
       const owner = String(em || '').trim();
       const storeEmail = String(storeContactEmail || '').trim();
@@ -348,7 +435,6 @@ export default function StoreSalesScreen({theme, onBack}) {
         .map(x => String(x || '').trim())
         .filter(Boolean);
 
-      // validate + dedupe (keep stable)
       const recipients = Array.from(
         new Set(recipientsRaw.filter(isValidEmail).map(x => x.toLowerCase())),
       );
@@ -363,10 +449,9 @@ export default function StoreSalesScreen({theme, onBack}) {
         return;
       }
 
-      // Backend requires `to` (owner) + optional storeEmail
       const payload = {
-        to: recipients[0], // primary
-        storeEmail: storeEmail, // backend will include if different + valid
+        to: recipients[0],
+        storeEmail: storeEmail,
         storeName: subtitle || 'Store',
         dateLabel: todayLabel,
         timezone: 'America/New_York',
@@ -376,6 +461,7 @@ export default function StoreSalesScreen({theme, onBack}) {
           taxCents: totals.taxCents,
           tipCents: totals.tipCents,
           serviceFeeCents: totals.serviceFeeCents,
+          albaFeeCents: totals.albaFeeCents,
           totalCents: totals.totalCents,
           payoutAmountCents: totals.payoutAmountCents,
         },
@@ -399,7 +485,6 @@ export default function StoreSalesScreen({theme, onBack}) {
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text}`);
 
-      // Humble confirmation (clear + premium)
       Alert.alert(
         'Report sent',
         `We emailed today’s sales summary to:\n\n• Owner\n• Store contact\n• AGSPay admin\n\n(And a developer test copy was delivered.)`,
@@ -438,8 +523,13 @@ export default function StoreSalesScreen({theme, onBack}) {
             <Text style={[styles.backText, {color: t.text}]}>Back</Text>
           </Pressable>
 
-          <View style={{flex: 1, alignItems: 'center'}}>
+          {/* ✅ CENTER COLUMN TAP ZONE (7 taps = logout) */}
+          <View
+            style={styles.centerHeaderTapZone}
+            onStartShouldSetResponder={() => true}
+            onResponderRelease={handleCenterHeaderTap}>
             <Text style={[styles.title, {color: t.text}]}>Store Sales</Text>
+
             <Text
               style={[
                 styles.subtitle,
@@ -447,6 +537,7 @@ export default function StoreSalesScreen({theme, onBack}) {
               ]}>
               {subtitle} Location
             </Text>
+
             <Text
               style={[
                 styles.subtitle,
@@ -604,7 +695,6 @@ export default function StoreSalesScreen({theme, onBack}) {
           ) : null}
         </View>
 
-        {/* ✅ EMAIL BUTTON (Terminal-style gold) */}
         <Pressable
           onPress={handleEmailReport}
           disabled={emailSending}
@@ -637,6 +727,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+
+  centerHeaderTapZone: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+
   title: {fontSize: 20, fontWeight: '900'},
   subtitle: {marginTop: 4, fontSize: 12, fontWeight: '800'},
 

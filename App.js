@@ -1,4 +1,7 @@
 // FILE: App.js
+//
+// ✅ ONLY CHANGE: pass onLogout into StoreSalesScreen so 7-tap logout routes to LOGIN
+// Everything else kept the same.
 
 import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
 import {
@@ -578,7 +581,13 @@ export default function App() {
 
     // ✅ NEW: Sales placeholder screen route
     if (screen === 'SALES')
-      return <StoreSalesScreen theme={theme} onBack={() => go('TERMINAL')} />;
+      return (
+        <StoreSalesScreen
+          theme={theme}
+          onBack={() => go('TERMINAL')}
+          onLogout={hardLogoutToLogin} // ✅ FIX: now 7-tap logout routes to LOGIN
+        />
+      );
 
     if (screen === 'FIXED_TIP')
       return (
