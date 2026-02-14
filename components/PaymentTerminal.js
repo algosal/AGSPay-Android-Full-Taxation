@@ -45,8 +45,18 @@ async function requestLocationPermissionIfNeeded() {
   return true;
 }
 
+// ✅ Improved: reads from BOTH stores (generic token store first, then internet session)
 async function readAgpayAuthToken() {
   try {
+    // 1) Preferred: generic token store (written by Login.js)
+    const tokenCreds = await Keychain.getGenericPassword({
+      service: 'agpayAuthToken',
+    });
+    if (tokenCreds?.password && typeof tokenCreds.password === 'string') {
+      return tokenCreds.password;
+    }
+
+    // 2) Fallback: internet session store
     const creds = await Keychain.getInternetCredentials('agpayAuth');
     if (!creds?.password) return null;
     const parsed = JSON.parse(creds.password);
@@ -106,7 +116,6 @@ function buildStripeDescription({
   const cmt = String(comment || '').trim();
   const amt = String(amountLabel || '').trim();
 
-  // Keep this similar to what you were doing before (short + readable)
   const parts = [];
   if (corp || store)
     parts.push(`${corp || 'Corporate'} / ${store || 'Store'}`.trim());
@@ -209,8 +218,6 @@ async function readAgpaySelection() {
   }
 }
 
-// ✅ After your corp/store screens, store may be saved under a separate service.
-// We’ll try a few common ones without changing your app flow.
 async function readStoreFromKeychainFallback() {
   const servicesToTry = [
     'agpayStore',
@@ -232,7 +239,6 @@ async function readStoreFromKeychainFallback() {
       const obj = JSON.parse(raw);
       if (!obj || typeof obj !== 'object') continue;
 
-      // accept common shapes
       const storeName =
         obj.storeName ||
         obj?.store?.storeName ||
@@ -296,7 +302,6 @@ async function postTransactionToVendio(txnPayload) {
     );
   }
 
-  // response is JSON but can be large; log safely
   try {
     const json = JSON.parse(text);
     console.log(
@@ -411,7 +416,6 @@ const PaymentTerminal = forwardRef(
           );
         }
 
-        // UX only — you already confirmed NFC is on BACK for this tablet
         try {
           await setTapToPayUxConfiguration({
             tapZone: {
@@ -651,7 +655,6 @@ const PaymentTerminal = forwardRef(
 
         setStatusLine('Creating PaymentIntent…');
 
-        // selection may have corp but sometimes store gets cleared; we’ll fill from fallback if needed
         const selection = (await readAgpaySelection()) || {};
         const storeFallback = await readStoreFromKeychainFallback();
 
@@ -679,7 +682,6 @@ const PaymentTerminal = forwardRef(
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
         });
 
-        // Stripe metadata
         const baseMeta = {
           corporateRef,
           corporateName,
@@ -721,18 +723,12 @@ const PaymentTerminal = forwardRef(
         const pi = confirmed?.paymentIntent || {};
         setStatusLine('Payment succeeded');
 
-        // -----------------------------
-        // ✅ IMPORTANT: build VendioTransactions payload exactly for your Lambda
-        // It promotes from debugMeta.* using keys:
-        // subtotalCents, taxCents, serviceFeeCents, tipCents, totalCents
-        // -----------------------------
         const subtotalCents = pickCents(breakdown, debugMeta, [
           'subtotalCents',
           'subtotal',
         ]);
         const taxCents = pickCents(breakdown, debugMeta, ['taxCents', 'tax']);
         const tipCents = pickCents(breakdown, debugMeta, ['tipCents', 'tip']);
-        // ✅ use serviceFeeCents (NOT albaFeeCents)
         const serviceFeeCents = pickCents(breakdown, debugMeta, [
           'serviceFeeCents',
           'albaFeeCents',
@@ -747,32 +743,27 @@ const PaymentTerminal = forwardRef(
           storeRef,
           storeName,
 
-          // ✅ top-level cents (so reporting columns fill even if promotion misses)
           subtotalCents,
           taxCents,
           tipCents,
           serviceFeeCents,
-          albaFeeCents: serviceFeeCents, // keep alias too
+          albaFeeCents: serviceFeeCents,
           totalCents,
 
           amountLabel: amountLabel || `$${(amt / 100).toFixed(2)}`,
 
-          // ✅ Your Lambda also promotes from debugMeta — match its expected keys
           debugMeta: {
             ...(debugMeta || {}),
             subtotalCents,
             taxCents,
             tipCents,
             serviceFeeCents,
-            // keep taxRate if you have it (Lambda will convert float->Decimal)
             ...(debugMeta?.taxRate !== undefined
               ? {taxRate: debugMeta.taxRate}
               : {}),
-            // keep note if you have it
             ...(uiComment ? {note: uiComment} : {}),
           },
 
-          // keep any breakdown you already pass around (optional)
           breakdown: breakdown || null,
 
           descriptionSentToStripe: stripeDescription,
@@ -784,7 +775,6 @@ const PaymentTerminal = forwardRef(
             amount: pi?.amount || amt,
             currency: pi?.currency || currency || 'usd',
             paymentMethodId: pi?.paymentMethodId || pi?.paymentMethod || null,
-            // chargeId is inside pi.charges[] in many objects; keep null if absent
             chargeId: null,
           },
 
@@ -792,7 +782,6 @@ const PaymentTerminal = forwardRef(
           clientEpochMs: Date.now(),
         };
 
-        // Try to pull chargeId + card details from charges array (if present)
         try {
           const charges = Array.isArray(pi?.charges) ? pi.charges : [];
           const ch = charges[0] || null;
@@ -808,14 +797,12 @@ const PaymentTerminal = forwardRef(
           if (last4) txnPayload.last4 = String(last4);
         } catch {}
 
-        // ✅ POST to VendioTransactions so the table has complete data
         try {
           setStatusLine('Saving transaction…');
           await postTransactionToVendio(txnPayload);
           console.log('✅ Transaction saved to VendioTransactions');
         } catch (e) {
           console.log('❌ Transaction save failed:', e);
-          // Still allow receipt screen, but alert you loudly
           Alert.alert(
             'Saved charge, but TXN save failed',
             String(e?.message || e),
@@ -824,7 +811,6 @@ const PaymentTerminal = forwardRef(
 
         await clearAgpayComment();
 
-        // Your existing success callback
         onPaymentSuccess?.({
           method: 'CARD',
           paymentMethod: 'CARD',

@@ -12,13 +12,9 @@ import {
 } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 
-// -----------------------------------------------------------------------------
-// LOGIN API (Vendio Admin MVP)
-// -----------------------------------------------------------------------------
 const LOGIN_URL =
   'https://qbww95j856.execute-api.us-east-2.amazonaws.com/s1/login';
 
-// If your backend wraps responses like { body: "..." }, this will normalize it.
 function safeJsonParse(text) {
   try {
     return text ? JSON.parse(text) : null;
@@ -30,13 +26,11 @@ function safeJsonParse(text) {
 function normalizeLoginResponse(raw) {
   if (!raw) return null;
 
-  // If API Gateway returns { body: "stringified json" }
   if (typeof raw.body === 'string') {
     const inner = safeJsonParse(raw.body);
     return inner || raw;
   }
 
-  // If API Gateway returns { body: { ... } }
   if (raw.body && typeof raw.body === 'object') {
     return raw.body;
   }
@@ -59,7 +53,6 @@ function resolveToken(payload) {
 function resolveOwnerId(payload) {
   if (!payload) return null;
 
-  // 1) Top-level (if backend ever adds it later)
   const direct =
     payload.ownerId ||
     payload.ownerID ||
@@ -70,7 +63,6 @@ function resolveOwnerId(payload) {
 
   if (direct) return direct;
 
-  // 2) Nested profile object (your current response)
   if (payload.profile && typeof payload.profile === 'object') {
     return payload.profile.userId || payload.profile.userID || null;
   }
@@ -78,7 +70,6 @@ function resolveOwnerId(payload) {
   return null;
 }
 
-// ✅ NEW: role resolver (supports a few likely shapes)
 function resolveUserRole(payload) {
   if (!payload) return null;
 
@@ -94,12 +85,10 @@ function resolveUserRole(payload) {
 }
 
 async function storeTokenAndSession({token, sessionObj}) {
-  // Token should be stored as a plain string (never JSON.parse it later)
   await Keychain.setGenericPassword('token', token, {
     service: 'agpayAuthToken',
   });
 
-  // Session can be JSON (safe to JSON.parse later)
   await Keychain.setGenericPassword('session', JSON.stringify(sessionObj), {
     service: 'agpaySession',
   });
@@ -116,7 +105,7 @@ export default function Login({onLoginSuccess}) {
       const cleanEmail = String(email || '')
         .trim()
         .toLowerCase();
-      const cleanPassword = String(password || ''); // DO NOT lowercase passwords.
+      const cleanPassword = String(password || '');
 
       if (!cleanEmail || !cleanPassword) {
         Alert.alert('Missing info', 'Enter email and password.');
@@ -137,7 +126,6 @@ export default function Login({onLoginSuccess}) {
 
       setSaving(true);
 
-      // 1) Call backend login (real auth)
       console.log('LOGIN => requesting JWT:', {email: cleanEmail});
 
       const resp = await fetch(LOGIN_URL, {
@@ -164,7 +152,6 @@ export default function Login({onLoginSuccess}) {
       const normalized = normalizeLoginResponse(rawJson || {});
       console.log('LOGIN => normalized:', JSON.stringify(normalized, null, 2));
 
-      // ✅ NEW: block banned users BEFORE saving anything
       const userRole = resolveUserRole(normalized);
       console.log('LOGIN => resolved user_role:', userRole);
 
@@ -198,12 +185,10 @@ export default function Login({onLoginSuccess}) {
         return;
       }
 
-      // 2) Preserve your existing authed gate EXACTLY (do not disturb)
       await Keychain.setGenericPassword(cleanEmail, 'logged_in', {
         accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
       });
 
-      // 3) Store auth context separately (keeps your existing behavior)
       const authSession = {
         email: cleanEmail,
         ownerId,
@@ -218,14 +203,17 @@ export default function Login({onLoginSuccess}) {
         JSON.stringify(authSession),
       );
 
-      // 4) Add two safe stores that eliminate the “JSON Parse error: Unexpected character”
       await storeTokenAndSession({token, sessionObj: authSession});
 
       console.log(
         'LOGIN => Keychain saved: generic session + agpayAuth + agpayAuthToken + agpaySession',
       );
 
-      // Pass normalized payload upward so App.js can store it / route correctly
+      // ✅ Warmup flag (App.js will actually run init+connect)
+      await Keychain.setGenericPassword('warmup', '1', {
+        service: 'agpayWarmupTerminal',
+      });
+
       onLoginSuccess(normalized);
     } catch (e) {
       console.log('Login error:', e);

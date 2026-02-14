@@ -1,7 +1,7 @@
 // FILE: App.js
 //
-// ✅ ONLY CHANGE: pass onLogout into StoreSalesScreen so 7-tap logout routes to LOGIN
-// Everything else kept the same.
+// ✅ CHANGE: Connect Stripe Tap to Pay automatically right after login
+// Fixes: "🔥 Warmup: paymentRef not ready yet" by mounting PaymentTerminal whenever logged in.
 
 import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
 import {
@@ -27,7 +27,6 @@ import CheckoutScreen from './components/Checkout/CheckoutScreen';
 import ReceiptScreen from './components/Receipt/ReceiptScreen';
 import FixedTipScreen from './components/Tip/FixedTipScreen';
 
-// ✅ NEW: Store Sales screen
 import StoreSalesScreen from './components/Sales/StoreSalesScreen';
 
 import PaymentTerminal from './components/PaymentTerminal';
@@ -37,9 +36,12 @@ const CONNECTION_TOKEN_URL =
   'https://dgb44mnqc9.execute-api.us-east-2.amazonaws.com/Stripe/stripe/connection_token';
 
 const VERIFY_ME_URL =
-  'https://omrb8dwy0j.execute-api.us-east-2.amazonaws.com/prod/VerifyMe'; // ⚠️ keep your exact URL if different
+  'https://omrb8dwy0j.execute-api.us-east-2.amazonaws.com/prod/VerifyMe';
 
-const TAX_RATE = 0.0885; // 8.85%
+const TAX_RATE = 0.0885;
+
+// ✅ If true: connect right after login (will request location permission on Android)
+const AUTO_CONNECT_READER_ON_LOGIN = true;
 
 function safeJsonParse(x) {
   try {
@@ -125,6 +127,24 @@ async function clearAgpayComment() {
     console.log('clearAgpayComment error:', e);
     return false;
   }
+}
+
+// ✅ Warmup flag
+async function readWarmupFlag() {
+  try {
+    const warm = await Keychain.getGenericPassword({
+      service: 'agpayWarmupTerminal',
+    });
+    return warm?.password === '1';
+  } catch {
+    return false;
+  }
+}
+
+async function clearWarmupFlag() {
+  try {
+    await Keychain.resetGenericPassword({service: 'agpayWarmupTerminal'});
+  } catch {}
 }
 
 // ---------------------- VerifyMe (pk only) ----------------------
@@ -223,6 +243,7 @@ async function verifyUserRoleByPk(pk) {
 export default function App() {
   const paymentRef = useRef(null);
   const startingCardRef = useRef(false);
+  const warmupRanRef = useRef(false);
 
   const [booting, setBooting] = useState(true);
   const [screen, setScreen] = useState('LOGIN');
@@ -258,6 +279,8 @@ export default function App() {
     setReaderStatus({connected: false, label: ''});
     setIsReaderBusy(false);
     setTerminalStatusLine('');
+    warmupRanRef.current = false;
+    clearWarmupFlag();
     setScreen('LOGIN');
   };
 
@@ -340,12 +363,12 @@ export default function App() {
     })();
   }, []);
 
-  async function waitForPaymentRefReady(timeoutMs = 4000) {
+  async function waitForPaymentRefReady(timeoutMs = 6000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (
-        paymentRef.current?.startCardPayment &&
-        paymentRef.current?.ensureInit
+        paymentRef.current?.ensureInit &&
+        paymentRef.current?.connectReaderFlow
       ) {
         return true;
       }
@@ -353,6 +376,50 @@ export default function App() {
     }
     return false;
   }
+
+  // ✅ Warmup+Connect immediately after login (not waiting for TERMINAL)
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!session?.token) return;
+        if (warmupRanRef.current) return;
+
+        const shouldWarmup = await readWarmupFlag();
+        if (!shouldWarmup) return;
+
+        console.log('🔥 Warmup requested (post-login)');
+
+        // Ensure PaymentTerminal is mounted and ref is ready
+        const ready = await waitForPaymentRefReady(8000);
+        if (!ready) {
+          console.log('🔥 Warmup: paymentRef still not ready');
+          return;
+        }
+
+        warmupRanRef.current = true;
+        await clearWarmupFlag();
+
+        setStripeEnabled(true);
+
+        console.log('🔥 Warmup => ensureInit()');
+        await paymentRef.current.ensureInit?.();
+
+        if (AUTO_CONNECT_READER_ON_LOGIN) {
+          console.log('🔌 Warmup => connectReaderFlow()');
+          setIsReaderBusy(true);
+          try {
+            await paymentRef.current.connectReaderFlow?.();
+          } finally {
+            setIsReaderBusy(false);
+          }
+        }
+
+        console.log('✅ Warmup complete');
+      } catch (e) {
+        console.log('❌ Warmup error:', e);
+      }
+    })();
+  }, [session?.token]);
 
   // ---------- LOGIN ----------
   const handleLoginSuccess = async payload => {
@@ -540,7 +607,7 @@ export default function App() {
           theme={theme}
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
-          onGoToSales={() => go('SALES')} // ✅ NEW
+          onGoToSales={() => go('SALES')}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
@@ -579,13 +646,12 @@ export default function App() {
         />
       );
 
-    // ✅ NEW: Sales placeholder screen route
     if (screen === 'SALES')
       return (
         <StoreSalesScreen
           theme={theme}
           onBack={() => go('TERMINAL')}
-          onLogout={hardLogoutToLogin} // ✅ FIX: now 7-tap logout routes to LOGIN
+          onLogout={hardLogoutToLogin}
         />
       );
 
@@ -651,16 +717,10 @@ export default function App() {
   })();
 
   const showFloatingToggle = screen !== 'CORP' && screen !== 'STORE';
-  const shouldRenderPaymentTerminal =
-    !!session?.token && stripeEnabled && screen === 'TERMINAL';
 
-  const providerKey = stripeEnabled ? 'stripe_on' : 'stripe_off';
-
+  // ✅ Provider should stay mounted. Do NOT key-toggle it.
   return (
-    <StripeTerminalProvider
-      key={providerKey}
-      tokenProvider={tokenProvider}
-      logLevel="verbose">
+    <StripeTerminalProvider tokenProvider={tokenProvider} logLevel="verbose">
       <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
         <StatusBar translucent backgroundColor="transparent" />
 
@@ -688,7 +748,8 @@ export default function App() {
 
         {content}
 
-        {shouldRenderPaymentTerminal ? (
+        {/* ✅ IMPORTANT: Always mount PaymentTerminal when logged in so ref is always ready */}
+        {!!session?.token ? (
           <PaymentTerminal
             ref={paymentRef}
             amountCents={Number(chargeData?.totalCents || 0)}
