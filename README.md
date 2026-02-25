@@ -1,138 +1,296 @@
-# 💳 AGPay — Android Tablet (Tap to Pay)
+# 📟 AGPay Android Tablet (No Built-In NFC) — USB External Reader Notes (Samsung)
 
-🚧 **AGPay Android Tablet build** for **NFC-enabled Android tablets**, supporting **Tap to Pay** with contactless credit & debit cards.
+Welcome to the **AGPay Android Tablet** variant that targets **Samsung tablets with no built-in NFC**, using an **external USB-C contactless smart card/NFC reader**.
 
-This repository contains the **tablet-focused variant** of AGPay. The core payment flow is functional, with **ongoing device-specific tuning** in progress.
+This README captures **exactly what we verified**, **the working ADB commands**, and **how we confirmed the tablet is acting as USB Host (OTG)** and can **detect the reader**.
 
 ---
 
-## ✨ What Works Today
+## ✅ Goal
 
-✅ **Tap to Pay on Android (Tablet)**
+Enable AGPay on a Samsung tablet **without internal NFC**, by using:
 
-- Uses built-in **NFC hardware**
-- Accepts contactless **credit & debit cards**
-- Stripe Terminal integration active
+- 🔌 **External USB-C contactless reader**
+- 📲 Tablet in **USB Host mode (DFP / Host)**
+- 🧪 Confirm device detection via `adb` + `dumpsys usb` + `lsusb`
 
-✅ **Complete Checkout Flow**
+---
+
+## 🧩 Hardware
+
+### 📱 Tablet
+
+- **Model:** `SM-X218U`
+- **Device:** `gta9p`
+- **Build Fingerprint:**
 
 ```
 
-Amount → Tip → Payment Method → Receipt
+samsung/gta9psqx/gta9p:11/RP1A.200720.012/X218USQS9DYJ6:user/release-keys
 
 ```
 
-✅ **Store Terminal Mode**
+### 🔌 External Reader
 
-- Terminal screen can remain open indefinitely
-- Reader connect / disconnect supported
-- Designed for counter-style tablet usage
+- **Product name shown by Android:** `EMV Smartcard Reader`
+- **Vendor ID:** `11491`
+- **Product ID:** `38247`
 
-✅ **Receipts**
+Also visible in Linux-style USB IDs:
 
-- 📧 Email receipts supported
-- 🧾 Full breakdown:
-  - Subtotal
-  - Sales tax
-  - Service fee
-  - Tip
-  - Total
+- `2ce3:9567`
 
----
+📦 Amazon item (reference):
 
-## ⚠️ Known Tablet-Specific Issue (In Progress)
-
-🚧 **NFC tag read behavior on tablets**
-
-- Some Android tablets handle NFC tag discovery differently than phones
-- Occasional inconsistency when reading Tap to Pay card tags
-- Being actively tested and adjusted on real hardware
-
-> A tablet device is scheduled for hands-on debugging and tuning.  
-> Fixes will be applied before backend expansion (DynamoDB + Lambda work).
+- CAC NFC Smart Card Reader Military, Dual Interface USB DOD Military ID/IC Card Reader with Contactless NFC Tap-to-Read  
+  (USB-C adapter included)
 
 ---
 
-## 📱 Device Requirements
+## 🔥 What We Confirmed (Critical)
 
-- **Android tablet with NFC**
-- NFC **enabled** in system settings
-- Internet connection (auth + payment processing)
-- Supported Android version per Stripe Tap to Pay requirements
+### ✅ Tablet enters USB Host mode
 
-> ⚠️ Not all tablets implement NFC identically. Device compatibility testing is ongoing.
+We confirmed the tablet successfully becomes **Host**:
 
----
+- `host_connected=true`
+- `current_mode=dfp`
+- `power_role=source`
+- `data_role=host`
 
-## 🛠️ Tech Stack
-
-- **React Native**
-- **Stripe Terminal (Tap to Pay on Android)**
-- **NFC-based contactless payments**
-- Backend APIs (auth, verification, receipts)
+That means OTG/host mode is active and Android should be able to talk to USB devices.
 
 ---
 
-## ⚙️ Setup
+## 🧪 Step-by-Step Verification
 
-Install dependencies:
+### 1) Confirm ADB sees the tablet
 
 ```bash
-npm install
+adb devices
+```
+
+Example:
+
+```
+List of devices attached
+192.168.1.22:38967 device
 ```
 
 ---
 
-## ▶️ Run on Android Tablet
+### 2) Confirm USB role & host mode (MOST IMPORTANT)
 
 ```bash
-npx react-native run-android
+adb -s 192.168.1.22:38967 shell dumpsys usb | findstr /i "host_connected current_mode data_role power_role"
 ```
 
-Or:
+✅ Expected output (host mode):
 
-- Open the `android/` folder in **Android Studio**
-- Build & run on a **physical NFC-enabled tablet**
+```
+host_connected=true
+current_mode=dfp
+power_role=source
+data_role=host
+```
 
-> ⚠️ Emulator will NOT support Tap to Pay.
+If you see:
 
----
+```
+host_connected=false
+current_mode=ufp
+data_role=device
+```
 
-## 🧪 Testing Notes
-
-- Always test on **real hardware**
-- Ensure NFC is enabled before launching the app
-- Keep device unlocked during Tap to Pay interactions
-
----
-
-## 🗺️ Roadmap (Short-Term)
-
-- 🔧 Fix tablet NFC tag detection consistency
-- 🧪 Validate Tap to Pay flow across tablet models
-- 🧠 Then proceed to:
-
-  - DynamoDB transaction aggregation
-  - Sales-of-the-day Lambda
-  - Backend optimizations
+❌ that means the tablet is NOT acting as host (no OTG).
 
 ---
 
-## 📦 Repository Status
+### 3) Confirm the USB reader is detected (VID/PID + product name)
 
-🟡 **Functional, under active tablet tuning**
-🟢 Core payment flow working
-🔧 Device-specific NFC adjustments in progress
+```bash
+adb -s 192.168.1.22:38967 shell dumpsys usb | findstr /i "vendor_id product_id product_name EMV Smartcard Reader"
+```
+
+✅ Expected:
+
+```
+vendor_id=11491
+product_id=38247
+product_name=EMV Smartcard Reader
+```
 
 ---
 
-## 🏁 Summary
+### 4) Confirm it appears in `/dev/bus/usb` + `lsusb`
 
-This repository represents the **Android Tablet build of AGPay**, sharing the same payment architecture as the phone version, with additional work underway to accommodate tablet-specific NFC behavior.
+```bash
+adb -s 192.168.1.22:38967 shell ls -la /dev/bus/usb
+adb -s 192.168.1.22:38967 shell lsusb
+```
 
-Once NFC tuning is finalized, backend expansion will resume.
+✅ Example `lsusb`:
 
-💳 Bigger screen. Same secure payments.
+```
+Bus 002 Device 002: ID 2ce3:9567
+```
+
+---
+
+### 5) Confirm tablet identity (optional)
+
+```bash
+adb -s 192.168.1.22:38967 shell getprop ro.product.model
+adb -s 192.168.1.22:38967 shell getprop ro.product.device
+adb -s 192.168.1.22:38967 shell getprop ro.vendor.build.fingerprint
+```
+
+---
+
+## 📡 Using ADB over Wi-Fi (Because USB-C port is occupied)
+
+Since the reader uses the only USB-C port, we switched to **ADB over Wi-Fi** to keep debugging while the reader stays connected.
+
+### ✅ Working approach
+
+1. Use the tablet’s Developer Options:
+
+   - **Wireless debugging ✅**
+   - Pair device / connect
+
+2. Connect from PC:
+
+```bash
+adb connect 192.168.1.22:38967
+```
+
+3. Use `-s` always (multi-device safety):
+
+```bash
+adb -s 192.168.1.22:38967 shell whoami
+```
+
+✅ Expected:
+
+```
+shell
+```
+
+---
+
+## 🛑 Common Problem: “adb tcpip 5555” fails / “error: closed”
+
+This is normal in some setups (especially when switching transport modes).
+We successfully used **Wireless Debugging pairing** instead of forcing classic tcpip mode.
+
+If you see:
+
+- `error: closed`
+- `device offline`
+- `more than one device/emulator`
+
+✅ Fix:
+
+- Disconnect old entries:
+
+```bash
+adb disconnect <old_host:port>
+```
+
+- Then use only one connection, and always target it via `-s`.
+
+---
+
+## ⚡ Quick One-Liner Checks
+
+### ✅ Confirm host + reader detected
+
+```bash
+adb -s 192.168.1.22:38967 shell dumpsys usb | findstr /i "host_connected current_mode data_role vendor_id product_id EMV"
+```
+
+---
+
+## ✅ Current Status
+
+- ✅ Tablet can become USB host (DFP / OTG)
+- ✅ External reader is detected (VID/PID + product name)
+- ✅ `lsusb` shows `2ce3:9567`
+- ✅ ADB works over Wi-Fi while reader occupies USB-C
+
+---
+
+## 🚀 Next Step (Implementation Plan)
+
+Now that the OS detects the reader, the next step is **reading a card**:
+
+### Options (we’ll choose based on what this reader exposes):
+
+- 🧠 **CCID / Smartcard interface** (APDU reads)
+- 📶 **Contactless NFC interface** (may expose as CCID, HID, or vendor protocol)
+- 📲 Android app integration via:
+
+  - `UsbManager` + `UsbDevice` detection
+  - claim interface + bulk endpoints
+  - or use a library if it’s standard CCID
+
+✅ We already confirmed the device shows up as:
+
+- `EMV Smartcard Reader`
+- `Contactless Card Reader`
+
+So the tablet can “see” it — now we need to implement the transport and read flow.
+
+---
+
+## 🧷 Notes / Constraints
+
+- 📌 The tablet has **only one USB-C port**
+- ✅ Therefore we must use:
+
+  - **Wireless ADB debugging**
+  - or an **OTG hub** (later) if simultaneous charge is needed
+
+- 🔋 Battery must be sufficient while testing without a hub
+
+---
+
+## 🧠 Tip
+
+If Android pops up a permission prompt like:
+
+> “Open AGPay to handle this USB device?”
+
+✅ Select AGPay and “Always allow” — this is the cleanest path for USB integration.
+
+---
+
+## 🏁 Repo Purpose
+
+This repo is the **no-NFC tablet variant** where we:
+
+- keep the AGPay core app stable ✅
+- and implement USB reader support without touching the working Terminal phone build.
+
+---
+
+## 📌 Helpful Debug Commands (Copy/Paste)
+
+```bash
+adb devices
+
+adb -s 192.168.1.22:38967 shell dumpsys usb | findstr /i "host_connected current_mode data_role power_role"
+adb -s 192.168.1.22:38967 shell dumpsys usb | findstr /i "vendor_id product_id product_name EMV Smartcard Reader"
+
+adb -s 192.168.1.22:38967 shell lsusb
+adb -s 192.168.1.22:38967 shell ls -la /dev/bus/usb
+```
+
+---
+
+## 🧾 License / Ownership
+
+AGPay © Alba Gold Systems. Internal engineering notes for device compatibility testing.
 
 ```
 
