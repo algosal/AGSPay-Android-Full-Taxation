@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- CAC Reader: 0x2CE3:0x9567 -->
+  <usb-device vendor-id="11491" product-id="38247" />
+</resources>

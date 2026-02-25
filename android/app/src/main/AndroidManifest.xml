@@ -24,7 +24,26 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+
+<intent-filter>
+  <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+</intent-filter>
+
+<meta-data
+  android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+  android:resource="@xml/usb_device_filter" />
+
         </activity>
+
+
+<receiver
+  android:name="com.agpay.usb.UsbReceiver"
+  android:exported="true">
+  <intent-filter>
+    <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+    <action android:name="com.agpay.USB_PERMISSION" />
+  </intent-filter>
+</receiver>
 
     </application>
 
