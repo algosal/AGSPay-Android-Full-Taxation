@@ -1,3 +1,9 @@
+// FILE: android/app/src/main/java/com/agpay/usb/UsbReceiver.java
+// Purpose:
+// - Receive USB attach event
+// - Request permission
+// - Receive permission result (explicit broadcast) and dump interfaces/endpoints
+
 package com.agpay.usb;
 
 import android.app.PendingIntent;
@@ -17,15 +23,24 @@ public class UsbReceiver extends BroadcastReceiver {
   public void onReceive(Context context, Intent intent) {
     String action = intent.getAction();
     UsbManager usbManager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
+    if (usbManager == null) return;
+
+    Log.d(TAG, "onReceive action=" + action);
 
     if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
       UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-      if (device == null) return;
+      if (device == null) {
+        Log.d(TAG, "USB_DEVICE_ATTACHED but EXTRA_DEVICE was null");
+        return;
+      }
 
-      Log.d(TAG, "USB ATTACHED: vid=" + device.getVendorId() + " pid=" + device.getProductId()
-          + " name=" + device.getDeviceName() + " product=" + device.getProductName());
+      Log.d(TAG, "USB ATTACHED: vid=" + device.getVendorId()
+          + " pid=" + device.getProductId()
+          + " name=" + device.getDeviceName()
+          + " product=" + device.getProductName());
 
       requestPermission(context, usbManager, device);
+      return;
     }
 
     if (ACTION_USB_PERMISSION.equals(action)) {
@@ -36,7 +51,6 @@ public class UsbReceiver extends BroadcastReceiver {
           + " device=" + (device != null ? device.getDeviceName() : "null"));
 
       if (granted && device != null) {
-        // Next milestone: open + enumerate interfaces
         UsbDebug.openAndLog(usbManager, device);
       }
     }
@@ -51,8 +65,15 @@ public class UsbReceiver extends BroadcastReceiver {
 
     Intent permIntent = new Intent(ACTION_USB_PERMISSION);
 
+    // ✅ Make it explicit so the permission result ALWAYS returns to this receiver
+    permIntent.setClass(context, UsbReceiver.class);
+
     int flags = 0;
-    if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+    if (Build.VERSION.SDK_INT >= 31) {
+      flags = PendingIntent.FLAG_MUTABLE;
+    } else if (Build.VERSION.SDK_INT >= 23) {
+      flags = PendingIntent.FLAG_IMMUTABLE;
+    }
 
     PendingIntent pi = PendingIntent.getBroadcast(context, 0, permIntent, flags);
     usbManager.requestPermission(device, pi);

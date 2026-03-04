@@ -1,6 +1,21 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<!-- FILE: android/app/src/main/AndroidManifest.xml -->
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.agpay">
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- ✅ Bluetooth (older Android) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!-- ✅ Bluetooth (Android 12+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- ✅ Location (often required for BLE scanning / reader discovery) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:name=".MainApplication"
@@ -24,26 +39,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Your USB attach stuff can remain if you still need it -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
 
-<intent-filter>
-  <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-</intent-filter>
-
-<meta-data
-  android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-  android:resource="@xml/usb_device_filter" />
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
 
         </activity>
 
-
-<receiver
-  android:name="com.agpay.usb.UsbReceiver"
-  android:exported="true">
-  <intent-filter>
-    <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-    <action android:name="com.agpay.USB_PERMISSION" />
-  </intent-filter>
-</receiver>
+        <receiver
+            android:name=".usb.UsbReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+                <action android:name="com.agpay.USB_PERMISSION" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

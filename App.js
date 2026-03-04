@@ -12,6 +12,8 @@ import {
   Text,
   ActivityIndicator,
   TouchableOpacity,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
@@ -42,6 +44,56 @@ const TAX_RATE = 0.0885;
 
 // ✅ If true: connect right after login (will request location permission on Android)
 const AUTO_CONNECT_READER_ON_LOGIN = true;
+
+// ---------------------- Android BLE permissions (Stripe Terminal) ----------------------
+//
+// ✅ On Android 12+, Bluetooth scan/connect requires runtime perms.
+// ✅ BLE discovery also depends on Location permission AND device Location Services toggle.
+async function ensureAndroidBlePermissions() {
+  if (Platform.OS !== 'android') return true;
+
+  try {
+    const perms = [];
+
+    // Android 12+ (API 31+) runtime permissions
+    if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN) {
+      perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN);
+    }
+    if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
+      perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+    }
+
+    // Location permission required for BLE scan on Android
+    perms.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+
+    const results = await PermissionsAndroid.requestMultiple(perms);
+
+    const scanOk =
+      !PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN ||
+      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === 'granted';
+
+    const connectOk =
+      !PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT ||
+      results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === 'granted';
+
+    const locOk =
+      results[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
+      'granted';
+
+    const ok = scanOk && connectOk && locOk;
+
+    if (!ok) {
+      console.log('❌ BLE permissions denied:', results);
+    } else {
+      console.log('✅ BLE permissions granted:', results);
+    }
+
+    return ok;
+  } catch (e) {
+    console.log('ensureAndroidBlePermissions error:', e);
+    return false;
+  }
+}
 
 function safeJsonParse(x) {
   try {
@@ -405,18 +457,33 @@ export default function App() {
         await paymentRef.current.ensureInit?.();
 
         if (AUTO_CONNECT_READER_ON_LOGIN) {
+          // ✅ Ensure permissions before connecting
+          setTerminalStatusLine('Requesting Bluetooth permissions…');
+          const ok = await ensureAndroidBlePermissions();
+          if (!ok) {
+            Alert.alert(
+              'Permissions needed',
+              'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
+            );
+            setTerminalStatusLine('');
+            return;
+          }
+
           console.log('🔌 Warmup => connectReaderFlow()');
           setIsReaderBusy(true);
           try {
+            setTerminalStatusLine('Searching for reader…');
             await paymentRef.current.connectReaderFlow?.();
           } finally {
             setIsReaderBusy(false);
+            setTerminalStatusLine('');
           }
         }
 
         console.log('✅ Warmup complete');
       } catch (e) {
         console.log('❌ Warmup error:', e);
+        setTerminalStatusLine('');
       }
     })();
   }, [session?.token]);
@@ -512,6 +579,17 @@ export default function App() {
     go('RECEIPT');
   };
 
+  // ✅ NEW: Cancel Transaction handler (used by CheckoutScreen)
+  const handleCancelTransaction = () => {
+    // Discard amount/tip and return to Terminal
+    setReceipt(null);
+    setChargeData(null);
+    setStripeEnabled(false);
+    setIsReaderBusy(false);
+    setTerminalStatusLine('');
+    go('TERMINAL');
+  };
+
   const startCardFlowNow = async () => {
     if (startingCardRef.current) return;
     startingCardRef.current = true;
@@ -531,11 +609,28 @@ export default function App() {
 
       await paymentRef.current.ensureInit?.();
 
-      const isConnected = await paymentRef.current.isReaderConnected?.();
-      if (!isConnected) await paymentRef.current.connectReaderFlow?.();
+      // ✅ Ensure permissions before connecting
+      setTerminalStatusLine('Requesting Bluetooth permissions…');
+      const ok = await ensureAndroidBlePermissions();
+      if (!ok) {
+        Alert.alert(
+          'Permissions needed',
+          'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
+        );
+        setTerminalStatusLine('');
+        return;
+      }
 
+      const isConnected = await paymentRef.current.isReaderConnected?.();
+      if (!isConnected) {
+        setTerminalStatusLine('Searching for reader…');
+        await paymentRef.current.connectReaderFlow?.();
+      }
+
+      setTerminalStatusLine('');
       await paymentRef.current.startCardPayment?.();
     } catch (e) {
+      setTerminalStatusLine('');
       Alert.alert('Payment failed', String(e?.message || e));
     } finally {
       setIsReaderBusy(false);
@@ -616,20 +711,35 @@ export default function App() {
             const gate = await gateVerifyOrLogout('PRE_CONNECT_READER');
             if (!gate.ok) return;
 
+            // ✅ Ensure permissions before connecting
+            setTerminalStatusLine('Requesting Bluetooth permissions…');
+            const ok = await ensureAndroidBlePermissions();
+            if (!ok) {
+              Alert.alert(
+                'Permissions needed',
+                'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
+              );
+              setTerminalStatusLine('');
+              return;
+            }
+
             setStripeEnabled(true);
 
             const ready = await waitForPaymentRefReady();
             if (!ready) {
               Alert.alert('Preparing reader', 'Please try again in a moment.');
+              setTerminalStatusLine('');
               return;
             }
 
             setIsReaderBusy(true);
             try {
+              setTerminalStatusLine('Searching for reader…');
               await paymentRef.current.ensureInit?.();
               await paymentRef.current.connectReaderFlow?.();
             } finally {
               setIsReaderBusy(false);
+              setTerminalStatusLine('');
             }
           }}
           onDisconnectReader={async () => {
@@ -638,9 +748,11 @@ export default function App() {
 
             setIsReaderBusy(true);
             try {
+              setTerminalStatusLine('Disconnecting…');
               await paymentRef.current.disconnectReaderFlow?.();
             } finally {
               setIsReaderBusy(false);
+              setTerminalStatusLine('');
             }
           }}
         />
@@ -690,6 +802,7 @@ export default function App() {
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
+          onCancel={handleCancelTransaction} // ✅ FIX: wire Cancel Transaction
           onCashConfirm={handleCashReceipt}
           onCardConfirm={handleCardConfirm}
           isBusy={isReaderBusy}

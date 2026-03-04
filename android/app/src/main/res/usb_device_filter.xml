@@ -1,5 +1,9 @@
+<!-- FILE: android/app/src/main/res/xml/usb_device_filter.xml
+     Purpose: trigger AGPay attach prompt only for this USB reader VID/PID
+     CAC Reader (hex): 0x2CE3:0x9567
+     CAC Reader (decimal): 11491:38247
+-->
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <!-- CAC Reader: 0x2CE3:0x9567 -->
   <usb-device vendor-id="11491" product-id="38247" />
 </resources>

@@ -8,23 +8,14 @@ function centsToMoney(cents) {
 }
 
 export default function CheckoutScreen({
-  theme, // accept theme from App.js
-
+  theme,
   chargeData,
   onBack,
-
-  // ✅ NEW: cancel whole txn (App should clear chargeData/receipt and go back)
   onCancel,
-
-  // final actions
   onCashConfirm,
   onCardConfirm,
-
   isBusy,
 }) {
-  /**
-   * theme palette (no logic change)
-   */
   const t = useMemo(() => {
     const bg = theme?.bg ?? '#020617';
     const card = theme?.card ?? '#050814';
@@ -34,12 +25,38 @@ export default function CheckoutScreen({
     const border = theme?.border ?? '#1f2937';
     const gold = theme?.gold ?? '#d4af37';
     const goldText = theme?.goldText ?? '#020617';
-
-    // chip / alt background (theme-friendly)
     const altCard = theme?.inputBg ?? '#111827';
-
     return {bg, card, inputBg, text, muted, border, gold, goldText, altCard};
   }, [theme]);
+
+  // ✅ DEFAULT TO CARD (but still respects chargeData.method if it is set)
+  const [method, setMethod] = useState(() => {
+    const m = String(chargeData?.method || 'CARD').toUpperCase();
+    return m === 'CASH' ? 'CASH' : 'CARD';
+  });
+
+  // ✅ NEW: international toggle (defaults from chargeData if provided)
+  const [isInternational, setIsInternational] = useState(() => {
+    return Boolean(chargeData?.isInternational || false);
+  });
+
+  // ✅ If chargeData changes later, re-sync (keeps UI correct)
+  useEffect(() => {
+    const m = String(chargeData?.method || 'CARD').toUpperCase();
+    setMethod(m === 'CASH' ? 'CASH' : 'CARD');
+  }, [chargeData?.method]);
+
+  // ✅ Keep toggle in sync if parent provides it (optional)
+  useEffect(() => {
+    if (typeof chargeData?.isInternational === 'boolean') {
+      setIsInternational(chargeData.isInternational);
+    }
+  }, [chargeData?.isInternational]);
+
+  // ✅ When switching away from CARD, clear international flag (avoids accidental fees)
+  useEffect(() => {
+    if (method !== 'CARD' && isInternational) setIsInternational(false);
+  }, [method]); // intentionally not depending on isInternational
 
   const data = useMemo(() => {
     const d = chargeData || {};
@@ -48,30 +65,29 @@ export default function CheckoutScreen({
     const taxCents = Number(d.taxCents || 0);
     const albaFeeCents = Number(d.albaFeeCents || 0);
     const tipCents = Number(d.tipCents || 0);
-    const totalCents = Number(d.totalCents ?? 0);
+
+    // ✅ Conditional $1 International Fee ONLY if CARD + toggle ON
+    const internationalFeeCents =
+      method === 'CARD' && isInternational ? 100 : 0;
+
+    const totalCents =
+      subtotalCents +
+      taxCents +
+      albaFeeCents +
+      tipCents +
+      internationalFeeCents;
 
     return {
       subtotalCents,
       taxCents,
       albaFeeCents,
       tipCents,
+      internationalFeeCents,
       totalCents,
-      totalLabel: d.totalLabel || centsToMoney(totalCents),
+      totalLabel: centsToMoney(totalCents),
       raw: d,
     };
-  }, [chargeData]);
-
-  // ✅ DEFAULT TO CARD (but still respects chargeData.method if it is set)
-  const [method, setMethod] = useState(() => {
-    const m = String(chargeData?.method || 'CARD').toUpperCase();
-    return m === 'CASH' ? 'CASH' : 'CARD';
-  });
-
-  // ✅ If chargeData changes later, re-sync (keeps UI correct)
-  useEffect(() => {
-    const m = String(chargeData?.method || 'CARD').toUpperCase();
-    setMethod(m === 'CASH' ? 'CASH' : 'CARD');
-  }, [chargeData?.method]);
+  }, [chargeData, method, isInternational]);
 
   const confirmLabel =
     method === 'CASH' ? 'Complete Cash & Email Receipt' : 'Charge Card';
@@ -142,6 +158,33 @@ export default function CheckoutScreen({
           </Pressable>
         </View>
 
+        {/* ✅ NEW: International toggle (only when CARD) */}
+        {method === 'CARD' ? (
+          <View style={s.intlRow}>
+            <Pressable
+              onPress={() => setIsInternational(v => !v)}
+              {...androidRipple('rgba(250,204,21,0.12)')}
+              style={({pressed}) => [
+                s.intlBtn,
+                {borderColor: t.border, backgroundColor: t.altCard},
+                isInternational
+                  ? {borderColor: t.gold, backgroundColor: t.inputBg}
+                  : null,
+                pressFX({pressed}),
+              ]}>
+              <Text
+                style={[
+                  s.intlText,
+                  {color: isInternational ? t.gold : t.text},
+                ]}>
+                {isInternational
+                  ? 'International Card: YES (+$1)'
+                  : 'International Card: NO'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {/* Summary */}
         <View
           style={[
@@ -163,6 +206,16 @@ export default function CheckoutScreen({
             label="Service Fee"
             value={centsToMoney(data.albaFeeCents)}
           />
+
+          {/* ✅ Only show fee row if applied */}
+          {data.internationalFeeCents > 0 ? (
+            <Row
+              themeT={t}
+              label="International Fee"
+              value={centsToMoney(data.internationalFeeCents)}
+            />
+          ) : null}
+
           <Row themeT={t} label="Tip" value={centsToMoney(data.tipCents)} />
 
           <View style={[s.divider, {backgroundColor: t.border}]} />
@@ -188,7 +241,10 @@ export default function CheckoutScreen({
           onPress={() => {
             const payload = {
               ...(data.raw || {}),
-              method, // defaults to CARD
+              method,
+              isInternational:
+                method === 'CARD' ? Boolean(isInternational) : false,
+              internationalFeeCents: data.internationalFeeCents,
               totalCents: data.totalCents,
               totalLabel: data.totalLabel,
             };
@@ -201,7 +257,7 @@ export default function CheckoutScreen({
           </Text>
         </Pressable>
 
-        {/* ✅ NEW: Cancel */}
+        {/* Cancel */}
         <Pressable
           disabled={isBusy}
           {...androidRipple('rgba(239,68,68,0.14)')}
@@ -293,6 +349,16 @@ const s = StyleSheet.create({
   },
   methodText: {fontWeight: '900'},
 
+  // ✅ NEW international toggle layout
+  intlRow: {marginTop: 10},
+  intlBtn: {
+    borderWidth: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  intlText: {fontWeight: '900', fontSize: 13},
+
   summaryBox: {
     marginTop: 14,
     borderWidth: 1,
@@ -326,7 +392,6 @@ const s = StyleSheet.create({
   primaryBtnDisabled: {opacity: 0.6},
   primaryText: {fontWeight: '900', fontSize: 15},
 
-  // ✅ NEW cancel style
   cancelBtn: {
     marginTop: 10,
     borderRadius: 16,

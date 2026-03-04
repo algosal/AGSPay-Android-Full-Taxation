@@ -58,19 +58,14 @@ function centsToMoney(cents) {
 }
 
 export default function TerminalScreen({
-  // onBackToStoreSelect, // ✅ not used (Back removed)
-
   onGoToTip,
-  onGoToSales, // ✅ NEW
+  onGoToSales,
   onConnectReader,
   onDisconnectReader,
   readerStatus,
   isReaderBusy,
   chargeData,
-
-  // kept in props in case App still passes it; not used now
-  commentResetNonce,
-
+  commentResetNonce, // not used
   terminalStatusLine,
   theme,
 }) {
@@ -110,15 +105,23 @@ export default function TerminalScreen({
 
   const connected = !!readerStatus?.connected;
 
-  // ✅ only show store name (no corporate name)
   const subtitle = useMemo(() => {
     const st = sel?.storeName ? String(sel.storeName) : 'Store';
     return st;
   }, [sel]);
 
-  const statusLabel =
-    readerStatus?.label ||
-    (connected ? 'Tap to Pay connected' : 'Tap to Pay not connected');
+  // ✅ Show clean label only. Tap it to reveal the actual device id/serial in an alert.
+  const readerDisplayLabel = connected ? 'Alba M2 Connected' : 'No reader';
+
+  // ✅ What we reveal in the alert when clicked
+  const readerRevealText = useMemo(() => {
+    const serial =
+      readerStatus?.serialNumber ||
+      readerStatus?.label ||
+      readerStatus?.id ||
+      'Unknown';
+    return String(serial);
+  }, [readerStatus]);
 
   const totalCents = Number(chargeData?.totalCents || 0);
   const totalLabel =
@@ -130,16 +133,9 @@ export default function TerminalScreen({
     <View style={[s.screen, {backgroundColor: t.bg}]} pointerEvents="auto">
       <View style={s.content} pointerEvents="auto">
         <View
-          style={[
-            s.card,
-            {
-              backgroundColor: t.card,
-              borderColor: t.border,
-            },
-          ]}
+          style={[s.card, {backgroundColor: t.card, borderColor: t.border}]}
           pointerEvents="auto">
           <View style={s.headerRow} pointerEvents="auto">
-            {/* ✅ Back button removed. Keep spacing so header stays centered */}
             <View style={{width: 60}} />
 
             <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
@@ -166,10 +162,7 @@ export default function TerminalScreen({
               hitSlop={12}
               style={[
                 s.connectChip,
-                {
-                  backgroundColor: t.inputBg,
-                  borderColor: t.border,
-                },
+                {backgroundColor: t.inputBg, borderColor: t.border},
               ]}>
               <Text style={[s.connectChipText, {color: t.text}]}>
                 {connected ? (
@@ -183,10 +176,24 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
-          <View style={s.dividerTop} pointerEvents="none">
-            <View style={s.row}>
+          {/* ✅ IMPORTANT FIX:
+              This used to be pointerEvents="none" which blocks clicks inside it.
+              We need this area clickable so the Reader label press works. */}
+          <View style={s.dividerTop} pointerEvents="auto">
+            <View style={s.row} pointerEvents="auto">
               <Text style={[s.rowLabel, {color: t.muted}]}>Reader</Text>
-              <Text style={[s.rowValue, {color: t.text}]}>{statusLabel}</Text>
+
+              {/* ✅ Tap label to reveal raw device serial/id */}
+              <Pressable
+                onPress={() => {
+                  if (!connected) return;
+                  Alert.alert('Stripe Reader', readerRevealText);
+                }}
+                hitSlop={10}>
+                <Text style={[s.rowValue, {color: t.text}]}>
+                  {readerDisplayLabel}
+                </Text>
+              </Pressable>
             </View>
 
             {bigStatus ? (
@@ -213,10 +220,7 @@ export default function TerminalScreen({
             hitSlop={16}
             style={[
               s.bigAmountBox,
-              {
-                backgroundColor: t.inputBg,
-                borderColor: t.border,
-              },
+              {backgroundColor: t.inputBg, borderColor: t.border},
             ]}>
             <Text style={[s.bigAmount, {color: t.text}]}>{totalLabel}</Text>
             <Text style={[s.bigAmountSub, {color: t.muted}]}>
@@ -242,19 +246,13 @@ export default function TerminalScreen({
               onChangeText={txt => setComment(txt)}
               placeholder="e.g., table 4, vendor note, special request…"
               placeholderTextColor={t.muted}
-              style={{
-                color: t.text,
-                fontSize: 14,
-                padding: 0,
-                margin: 0,
-              }}
+              style={{color: t.text, fontSize: 14, padding: 0, margin: 0}}
               autoCapitalize="sentences"
               autoCorrect
               returnKeyType="done"
             />
           </View>
 
-          {/* ✅ NEW: Sales button */}
           <Pressable
             onPress={() => onGoToSales?.()}
             hitSlop={16}

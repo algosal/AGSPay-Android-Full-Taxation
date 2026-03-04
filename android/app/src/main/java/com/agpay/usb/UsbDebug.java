@@ -1,6 +1,14 @@
+// FILE: android/app/src/main/java/com/agpay/usb/UsbDebug.java
+// Purpose: open USB device and dump interfaces/endpoints
+
 package com.agpay.usb;
 
-import android.hardware.usb.*;
+import android.hardware.usb.UsbConstants;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
+import android.hardware.usb.UsbManager;
 import android.util.Log;
 
 public class UsbDebug {
@@ -9,6 +17,8 @@ public class UsbDebug {
   public static void openAndLog(UsbManager usbManager, UsbDevice device) {
     UsbDeviceConnection conn = null;
     try {
+      Log.d(TAG, "openAndLog hasPermission=" + usbManager.hasPermission(device));
+
       conn = usbManager.openDevice(device);
       if (conn == null) {
         Log.e(TAG, "openDevice returned null (no permission or failed).");
