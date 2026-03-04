@@ -18,6 +18,9 @@ import {
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
 
+// ✅ KEEP AWAKE (prevents screen from sleeping)
+import KeepAwake from 'react-native-keep-awake';
+
 import Login from './components/Login/Login';
 import CorporateSelectScreen from './components/CorporateSelect/CorporateSelectScreen';
 import StoreSelectScreen from './components/StoreSelect/StoreSelectScreen';
@@ -293,6 +296,20 @@ async function verifyUserRoleByPk(pk) {
 }
 
 export default function App() {
+  // ✅ KEEP AWAKE (prevents screen from sleeping while app is open)
+  useEffect(() => {
+    try {
+      KeepAwake.activate();
+    } catch (e) {
+      console.log('KeepAwake.activate error:', e);
+    }
+    return () => {
+      try {
+        KeepAwake.deactivate();
+      } catch {}
+    };
+  }, []);
+
   const paymentRef = useRef(null);
   const startingCardRef = useRef(false);
   const warmupRanRef = useRef(false);
