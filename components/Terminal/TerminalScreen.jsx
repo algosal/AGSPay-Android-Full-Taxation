@@ -1,9 +1,12 @@
 // FILE: components/Terminal/TerminalScreen.jsx
 
-import React, {useEffect, useMemo, useState} from 'react';
-import {View, Text, Alert, Pressable, TextInput} from 'react-native';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
+import {View, Text, Alert, Pressable, TextInput, Vibration} from 'react-native';
 import * as Keychain from 'react-native-keychain';
+import Sound from 'react-native-sound';
 import terminalStyles from './terminal.styles';
+
+Sound.setCategory('Playback');
 
 async function readAgpaySelection() {
   try {
@@ -17,14 +20,15 @@ async function readAgpaySelection() {
 }
 
 /**
+ * ✅ IMPORTANT:
  * App/Receipt clears by storing a single space " ".
- * So we trim() here and treat it as empty.
+ * So we always trim() here and treat it as empty.
  */
 async function readAgpayComment() {
   try {
     const creds = await Keychain.getInternetCredentials('agpayComment');
     const raw = creds?.password ? String(creds.password) : '';
-    return raw.trim();
+    return raw.trim(); // " " => ""
   } catch (e) {
     console.log('readAgpayComment error:', e);
     return '';
@@ -32,7 +36,9 @@ async function readAgpayComment() {
 }
 
 /**
- * Android Keychain cannot store empty values.
+ * ✅ IMPORTANT (Android):
+ * setInternetCredentials throws if username OR password is empty.
+ * So if user leaves comment empty, store " " instead.
  */
 async function writeAgpayComment(text) {
   try {
@@ -62,13 +68,18 @@ export default function TerminalScreen({
   readerStatus,
   isReaderBusy,
   chargeData,
-  commentResetNonce,
+  commentResetNonce, // not used
   terminalStatusLine,
   theme,
 }) {
   const s = terminalStyles;
   const [sel, setSel] = useState(null);
   const [comment, setComment] = useState('');
+
+  // ✅ ensure we only signal ONCE per status cycle
+  const didPresentRef = useRef(false);
+  const didSuccessRef = useRef(false);
+  const didFailRef = useRef(false);
 
   const t = useMemo(() => {
     return {
@@ -83,6 +94,31 @@ export default function TerminalScreen({
       danger: theme?.danger ?? '#ef4444',
     };
   }, [theme]);
+
+  // ✅ helper: play raw sound files safely (android/app/src/main/res/raw/)
+  const playRawSound = useMemo(() => {
+    return (fileName, {vibrateMs = 0} = {}) => {
+      if (vibrateMs > 0) {
+        try {
+          Vibration.vibrate(vibrateMs);
+        } catch {}
+      }
+
+      try {
+        const snd = new Sound(fileName, Sound.MAIN_BUNDLE, error => {
+          if (error) {
+            console.log(`${fileName} load error:`, error);
+            return;
+          }
+          snd.play(() => {
+            snd.release();
+          });
+        });
+      } catch (e) {
+        console.log(`${fileName} play exception:`, e);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -124,18 +160,99 @@ export default function TerminalScreen({
 
   const bigStatus = terminalStatusLine || (isReaderBusy ? 'Working…' : '');
 
-  /**
-   * GREEN SCREEN LOGIC
-   * If Stripe says "Present card", make terminal screen green
-   */
-  const isPresentCard = useMemo(() => {
-    const v = String(terminalStatusLine || bigStatus || '').toLowerCase();
-    return v.includes('present card');
+  // Normalize status text
+  const statusLower = useMemo(() => {
+    return String(terminalStatusLine || bigStatus || '').toLowerCase();
   }, [terminalStatusLine, bigStatus]);
 
+  // Detect card prompt
+  const isPresentCard = useMemo(
+    () => statusLower.includes('present card'),
+    [statusLower],
+  );
+
+  /**
+   * ✅ SUCCESS detection (important fix):
+   * PaymentTerminal sets "Payment succeeded" but then quickly overwrites
+   * with "Saving transaction…", so we treat "Saving transaction" as success too.
+   */
+  const isPaymentSuccess = useMemo(() => {
+    return (
+      statusLower.includes('payment succeeded') ||
+      statusLower.includes('saving transaction')
+    );
+  }, [statusLower]);
+
+  /**
+   * ✅ FAIL detection:
+   * PaymentTerminal sets: setStatusLine(`Payment failed: ${...}`)
+   */
+  const isPaymentFailed = useMemo(() => {
+    return statusLower.includes('payment failed');
+  }, [statusLower]);
+
+  // Green screen override
   const screenBg = isPresentCard ? '#16a34a' : t.bg;
   const cardBg = isPresentCard ? '#0b3d1e' : t.card;
   const inputBg = isPresentCard ? '#0f4d26' : t.inputBg;
+
+  /**
+   * ✅ Put these files in:
+   * android/app/src/main/res/raw/
+   *
+   * - beep.wav    (present card)
+   * - success.wav (payment success)
+   * - fail.wav    (payment failed)
+   */
+  const PRESENT_SOUND = 'beep.wav';
+  const SUCCESS_SOUND = 'success.wav';
+  const FAIL_SOUND = 'fail.wav';
+
+  // Reset latches when a new payment flow starts so sounds can play again
+  useEffect(() => {
+    if (
+      statusLower.includes('creating paymentintent') ||
+      statusLower.includes('creating paymentintent') ||
+      statusLower.includes('retrieving intent') ||
+      statusLower.includes('present card')
+    ) {
+      didSuccessRef.current = false;
+      didFailRef.current = false;
+    }
+  }, [statusLower]);
+
+  // Present card: beep + vibrate once
+  useEffect(() => {
+    if (isPresentCard) {
+      if (didPresentRef.current) return;
+      didPresentRef.current = true;
+      playRawSound(PRESENT_SOUND, {vibrateMs: 80});
+    } else {
+      didPresentRef.current = false;
+    }
+  }, [isPresentCard, playRawSound]);
+
+  // Payment success: success sound once (with light vibration)
+  useEffect(() => {
+    if (isPaymentSuccess) {
+      if (didSuccessRef.current) return;
+      didSuccessRef.current = true;
+      playRawSound(SUCCESS_SOUND, {vibrateMs: 50});
+    } else {
+      didSuccessRef.current = false;
+    }
+  }, [isPaymentSuccess, playRawSound]);
+
+  // Payment failed: fail sound once (with stronger vibration)
+  useEffect(() => {
+    if (isPaymentFailed) {
+      if (didFailRef.current) return;
+      didFailRef.current = true;
+      playRawSound(FAIL_SOUND, {vibrateMs: 120});
+    } else {
+      didFailRef.current = false;
+    }
+  }, [isPaymentFailed, playRawSound]);
 
   return (
     <View style={[s.screen, {backgroundColor: screenBg}]} pointerEvents="auto">

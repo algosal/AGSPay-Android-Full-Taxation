@@ -5,6 +5,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- ✅ Allow vibration for terminal feedback -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- ✅ Keep screen awake (needed for react-native-keep-awake / wake locks) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -44,7 +47,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Your USB attach stuff can remain if you still need it -->
+            <!-- USB device attach -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
