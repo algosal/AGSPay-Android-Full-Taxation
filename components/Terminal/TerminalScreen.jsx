@@ -17,15 +17,14 @@ async function readAgpaySelection() {
 }
 
 /**
- * ✅ IMPORTANT:
  * App/Receipt clears by storing a single space " ".
- * So we always trim() here and treat it as empty.
+ * So we trim() here and treat it as empty.
  */
 async function readAgpayComment() {
   try {
     const creds = await Keychain.getInternetCredentials('agpayComment');
     const raw = creds?.password ? String(creds.password) : '';
-    return raw.trim(); // " " => ""
+    return raw.trim();
   } catch (e) {
     console.log('readAgpayComment error:', e);
     return '';
@@ -33,9 +32,7 @@ async function readAgpayComment() {
 }
 
 /**
- * ✅ IMPORTANT (Android):
- * setInternetCredentials throws if username OR password is empty.
- * So if user leaves comment empty, store " " instead.
+ * Android Keychain cannot store empty values.
  */
 async function writeAgpayComment(text) {
   try {
@@ -65,7 +62,7 @@ export default function TerminalScreen({
   readerStatus,
   isReaderBusy,
   chargeData,
-  commentResetNonce, // not used
+  commentResetNonce,
   terminalStatusLine,
   theme,
 }) {
@@ -110,10 +107,8 @@ export default function TerminalScreen({
     return st;
   }, [sel]);
 
-  // ✅ Show clean label only. Tap it to reveal the actual device id/serial in an alert.
   const readerDisplayLabel = connected ? 'Alba M2 Connected' : 'No reader';
 
-  // ✅ What we reveal in the alert when clicked
   const readerRevealText = useMemo(() => {
     const serial =
       readerStatus?.serialNumber ||
@@ -129,11 +124,24 @@ export default function TerminalScreen({
 
   const bigStatus = terminalStatusLine || (isReaderBusy ? 'Working…' : '');
 
+  /**
+   * GREEN SCREEN LOGIC
+   * If Stripe says "Present card", make terminal screen green
+   */
+  const isPresentCard = useMemo(() => {
+    const v = String(terminalStatusLine || bigStatus || '').toLowerCase();
+    return v.includes('present card');
+  }, [terminalStatusLine, bigStatus]);
+
+  const screenBg = isPresentCard ? '#16a34a' : t.bg;
+  const cardBg = isPresentCard ? '#0b3d1e' : t.card;
+  const inputBg = isPresentCard ? '#0f4d26' : t.inputBg;
+
   return (
-    <View style={[s.screen, {backgroundColor: t.bg}]} pointerEvents="auto">
+    <View style={[s.screen, {backgroundColor: screenBg}]} pointerEvents="auto">
       <View style={s.content} pointerEvents="auto">
         <View
-          style={[s.card, {backgroundColor: t.card, borderColor: t.border}]}
+          style={[s.card, {backgroundColor: cardBg, borderColor: t.border}]}
           pointerEvents="auto">
           <View style={s.headerRow} pointerEvents="auto">
             <View style={{width: 60}} />
@@ -162,7 +170,7 @@ export default function TerminalScreen({
               hitSlop={12}
               style={[
                 s.connectChip,
-                {backgroundColor: t.inputBg, borderColor: t.border},
+                {backgroundColor: inputBg, borderColor: t.border},
               ]}>
               <Text style={[s.connectChipText, {color: t.text}]}>
                 {connected ? (
@@ -176,14 +184,10 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
-          {/* ✅ IMPORTANT FIX:
-              This used to be pointerEvents="none" which blocks clicks inside it.
-              We need this area clickable so the Reader label press works. */}
           <View style={s.dividerTop} pointerEvents="auto">
             <View style={s.row} pointerEvents="auto">
               <Text style={[s.rowLabel, {color: t.muted}]}>Reader</Text>
 
-              {/* ✅ Tap label to reveal raw device serial/id */}
               <Pressable
                 onPress={() => {
                   if (!connected) return;
@@ -220,7 +224,7 @@ export default function TerminalScreen({
             hitSlop={16}
             style={[
               s.bigAmountBox,
-              {backgroundColor: t.inputBg, borderColor: t.border},
+              {backgroundColor: inputBg, borderColor: t.border},
             ]}>
             <Text style={[s.bigAmount, {color: t.text}]}>{totalLabel}</Text>
             <Text style={[s.bigAmountSub, {color: t.muted}]}>
@@ -231,7 +235,7 @@ export default function TerminalScreen({
           <View
             style={{
               marginTop: 12,
-              backgroundColor: t.inputBg,
+              backgroundColor: inputBg,
               borderColor: t.border,
               borderWidth: 1,
               borderRadius: 12,
@@ -260,7 +264,7 @@ export default function TerminalScreen({
               s.bigAmountBox,
               {
                 marginTop: 12,
-                backgroundColor: t.inputBg,
+                backgroundColor: inputBg,
                 borderColor: t.border,
                 alignItems: 'center',
                 justifyContent: 'center',
