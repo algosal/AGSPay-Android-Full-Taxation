@@ -19,27 +19,17 @@ async function readAgpaySelection() {
   }
 }
 
-/**
- * ✅ IMPORTANT:
- * App/Receipt clears by storing a single space " ".
- * So we always trim() here and treat it as empty.
- */
 async function readAgpayComment() {
   try {
     const creds = await Keychain.getInternetCredentials('agpayComment');
     const raw = creds?.password ? String(creds.password) : '';
-    return raw.trim(); // " " => ""
+    return raw.trim();
   } catch (e) {
     console.log('readAgpayComment error:', e);
     return '';
   }
 }
 
-/**
- * ✅ IMPORTANT (Android):
- * setInternetCredentials throws if username OR password is empty.
- * So if user leaves comment empty, store " " instead.
- */
 async function writeAgpayComment(text) {
   try {
     const normalized = String(text || '').trim();
@@ -63,12 +53,12 @@ function centsToMoney(cents) {
 export default function TerminalScreen({
   onGoToTip,
   onGoToSales,
+  onGoToTransactions,
   onConnectReader,
   onDisconnectReader,
   readerStatus,
   isReaderBusy,
   chargeData,
-  commentResetNonce, // not used
   terminalStatusLine,
   theme,
 }) {
@@ -76,7 +66,6 @@ export default function TerminalScreen({
   const [sel, setSel] = useState(null);
   const [comment, setComment] = useState('');
 
-  // ✅ ensure we only signal ONCE per status cycle
   const didPresentRef = useRef(false);
   const didSuccessRef = useRef(false);
   const didFailRef = useRef(false);
@@ -90,12 +79,9 @@ export default function TerminalScreen({
       muted: theme?.muted ?? '#9ca3af',
       border: theme?.border ?? '#1f2937',
       gold: theme?.gold ?? '#d4af37',
-      goldText: theme?.goldText ?? '#020617',
-      danger: theme?.danger ?? '#ef4444',
     };
   }, [theme]);
 
-  // ✅ helper: play raw sound files safely (android/app/src/main/res/raw/)
   const playRawSound = useMemo(() => {
     return (fileName, {vibrateMs = 0} = {}) => {
       if (vibrateMs > 0) {
@@ -160,22 +146,15 @@ export default function TerminalScreen({
 
   const bigStatus = terminalStatusLine || (isReaderBusy ? 'Working…' : '');
 
-  // Normalize status text
   const statusLower = useMemo(() => {
     return String(terminalStatusLine || bigStatus || '').toLowerCase();
   }, [terminalStatusLine, bigStatus]);
 
-  // Detect card prompt
   const isPresentCard = useMemo(
     () => statusLower.includes('present card'),
     [statusLower],
   );
 
-  /**
-   * ✅ SUCCESS detection (important fix):
-   * PaymentTerminal sets "Payment succeeded" but then quickly overwrites
-   * with "Saving transaction…", so we treat "Saving transaction" as success too.
-   */
   const isPaymentSuccess = useMemo(() => {
     return (
       statusLower.includes('payment succeeded') ||
@@ -183,35 +162,20 @@ export default function TerminalScreen({
     );
   }, [statusLower]);
 
-  /**
-   * ✅ FAIL detection:
-   * PaymentTerminal sets: setStatusLine(`Payment failed: ${...}`)
-   */
   const isPaymentFailed = useMemo(() => {
     return statusLower.includes('payment failed');
   }, [statusLower]);
 
-  // Green screen override
   const screenBg = isPresentCard ? '#16a34a' : t.bg;
   const cardBg = isPresentCard ? '#0b3d1e' : t.card;
   const inputBg = isPresentCard ? '#0f4d26' : t.inputBg;
 
-  /**
-   * ✅ Put these files in:
-   * android/app/src/main/res/raw/
-   *
-   * - beep.wav    (present card)
-   * - success.wav (payment success)
-   * - fail.wav    (payment failed)
-   */
   const PRESENT_SOUND = 'beep.wav';
   const SUCCESS_SOUND = 'success.wav';
   const FAIL_SOUND = 'fail.wav';
 
-  // Reset latches when a new payment flow starts so sounds can play again
   useEffect(() => {
     if (
-      statusLower.includes('creating paymentintent') ||
       statusLower.includes('creating paymentintent') ||
       statusLower.includes('retrieving intent') ||
       statusLower.includes('present card')
@@ -221,7 +185,6 @@ export default function TerminalScreen({
     }
   }, [statusLower]);
 
-  // Present card: beep + vibrate once
   useEffect(() => {
     if (isPresentCard) {
       if (didPresentRef.current) return;
@@ -232,38 +195,40 @@ export default function TerminalScreen({
     }
   }, [isPresentCard, playRawSound]);
 
-  // Payment success: success sound once (with light vibration)
   useEffect(() => {
     if (isPaymentSuccess) {
       if (didSuccessRef.current) return;
       didSuccessRef.current = true;
-      playRawSound(SUCCESS_SOUND, {vibrateMs: 50});
+      playRawSound(SUCCESS_SOUND, {vibrateMs: 60});
     } else {
       didSuccessRef.current = false;
     }
   }, [isPaymentSuccess, playRawSound]);
 
-  // Payment failed: fail sound once (with stronger vibration)
   useEffect(() => {
     if (isPaymentFailed) {
       if (didFailRef.current) return;
       didFailRef.current = true;
-      playRawSound(FAIL_SOUND, {vibrateMs: 120});
+
+      try {
+        Vibration.vibrate([0, 250, 120, 250]);
+      } catch {}
+
+      playRawSound(FAIL_SOUND);
     } else {
       didFailRef.current = false;
     }
   }, [isPaymentFailed, playRawSound]);
 
   return (
-    <View style={[s.screen, {backgroundColor: screenBg}]} pointerEvents="auto">
-      <View style={s.content} pointerEvents="auto">
+    <View style={[s.screen, {backgroundColor: screenBg}]}>
+      <View style={s.content}>
         <View
-          style={[s.card, {backgroundColor: cardBg, borderColor: t.border}]}
-          pointerEvents="auto">
-          <View style={s.headerRow} pointerEvents="auto">
+          style={[s.card, {backgroundColor: cardBg, borderColor: t.border}]}>
+          <View style={s.headerRow}>
             <View style={{width: 60}} />
 
-            <View style={{flex: 1, alignItems: 'center'}} pointerEvents="none">
+            <View style={{flex: 1, alignItems: 'center'}}>
               <View style={s.titleRow}>
                 <Text style={[s.titleAG, {color: t.text}]}>AG</Text>
                 <Text style={[s.titlePay, {color: t.gold}]}>Pay</Text>
@@ -284,7 +249,6 @@ export default function TerminalScreen({
                   Alert.alert('Terminal error', String(e?.message || e));
                 }
               }}
-              hitSlop={12}
               style={[
                 s.connectChip,
                 {backgroundColor: inputBg, borderColor: t.border},
@@ -301,16 +265,15 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
-          <View style={s.dividerTop} pointerEvents="auto">
-            <View style={s.row} pointerEvents="auto">
+          <View style={s.dividerTop}>
+            <View style={s.row}>
               <Text style={[s.rowLabel, {color: t.muted}]}>Reader</Text>
 
               <Pressable
                 onPress={() => {
                   if (!connected) return;
                   Alert.alert('Stripe Reader', readerRevealText);
-                }}
-                hitSlop={10}>
+                }}>
                 <Text style={[s.rowValue, {color: t.text}]}>
                   {readerDisplayLabel}
                 </Text>
@@ -338,7 +301,6 @@ export default function TerminalScreen({
               await writeAgpayComment(comment);
               onGoToTip?.();
             }}
-            hitSlop={16}
             style={[
               s.bigAmountBox,
               {backgroundColor: inputBg, borderColor: t.border},
@@ -367,16 +329,12 @@ export default function TerminalScreen({
               onChangeText={txt => setComment(txt)}
               placeholder="e.g., table 4, vendor note, special request…"
               placeholderTextColor={t.muted}
-              style={{color: t.text, fontSize: 14, padding: 0, margin: 0}}
-              autoCapitalize="sentences"
-              autoCorrect
-              returnKeyType="done"
+              style={{color: t.text, fontSize: 14}}
             />
           </View>
 
           <Pressable
             onPress={() => onGoToSales?.()}
-            hitSlop={16}
             style={[
               s.bigAmountBox,
               {
@@ -394,9 +352,26 @@ export default function TerminalScreen({
             </Text>
           </Pressable>
 
-          <Text
-            style={[s.statusText, {marginTop: 10, color: t.muted}]}
-            pointerEvents="none">
+          <Pressable
+            onPress={() => onGoToTransactions?.()}
+            style={[
+              s.bigAmountBox,
+              {
+                marginTop: 12,
+                backgroundColor: inputBg,
+                borderColor: t.border,
+                alignItems: 'center',
+                justifyContent: 'center',
+                paddingVertical: 18,
+              },
+            ]}>
+            <Text style={{fontSize: 32}}>🧾</Text>
+            <Text style={{color: t.gold, marginTop: 6, fontWeight: '800'}}>
+              Transactions
+            </Text>
+          </Pressable>
+
+          <Text style={[s.statusText, {marginTop: 10, color: t.muted}]}>
             Flow: Amount → Tip → Choose Cash/Card → Receipt
           </Text>
         </View>

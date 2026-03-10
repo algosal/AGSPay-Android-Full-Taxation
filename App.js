@@ -33,6 +33,7 @@ import ReceiptScreen from './components/Receipt/ReceiptScreen';
 import FixedTipScreen from './components/Tip/FixedTipScreen';
 
 import StoreSalesScreen from './components/Sales/StoreSalesScreen';
+import TodayTransactionsScreen from './components/Sales/TodayTransactionsScreen';
 
 import PaymentTerminal from './components/PaymentTerminal';
 import {themes} from './components/theme/agTheme';
@@ -49,16 +50,12 @@ const TAX_RATE = 0.0885;
 const AUTO_CONNECT_READER_ON_LOGIN = true;
 
 // ---------------------- Android BLE permissions (Stripe Terminal) ----------------------
-//
-// ✅ On Android 12+, Bluetooth scan/connect requires runtime perms.
-// ✅ BLE discovery also depends on Location permission AND device Location Services toggle.
 async function ensureAndroidBlePermissions() {
   if (Platform.OS !== 'android') return true;
 
   try {
     const perms = [];
 
-    // Android 12+ (API 31+) runtime permissions
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN) {
       perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN);
     }
@@ -66,7 +63,6 @@ async function ensureAndroidBlePermissions() {
       perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
     }
 
-    // Location permission required for BLE scan on Android
     perms.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
 
     const results = await PermissionsAndroid.requestMultiple(perms);
@@ -184,7 +180,6 @@ async function clearAgpayComment() {
   }
 }
 
-// ✅ Warmup flag
 async function readWarmupFlag() {
   try {
     const warm = await Keychain.getGenericPassword({
@@ -296,7 +291,6 @@ async function verifyUserRoleByPk(pk) {
 }
 
 export default function App() {
-  // ✅ KEEP AWAKE (prevents screen from sleeping while app is open)
   useEffect(() => {
     try {
       KeepAwake.activate();
@@ -400,7 +394,6 @@ export default function App() {
     return secret;
   }, []);
 
-  // ✅ BOOT
   useEffect(() => {
     (async () => {
       try {
@@ -446,7 +439,6 @@ export default function App() {
     return false;
   }
 
-  // ✅ Warmup+Connect immediately after login (not waiting for TERMINAL)
   useEffect(() => {
     (async () => {
       try {
@@ -458,7 +450,6 @@ export default function App() {
 
         console.log('🔥 Warmup requested (post-login)');
 
-        // Ensure PaymentTerminal is mounted and ref is ready
         const ready = await waitForPaymentRefReady(8000);
         if (!ready) {
           console.log('🔥 Warmup: paymentRef still not ready');
@@ -474,7 +465,6 @@ export default function App() {
         await paymentRef.current.ensureInit?.();
 
         if (AUTO_CONNECT_READER_ON_LOGIN) {
-          // ✅ Ensure permissions before connecting
           setTerminalStatusLine('Requesting Bluetooth permissions…');
           const ok = await ensureAndroidBlePermissions();
           if (!ok) {
@@ -505,7 +495,6 @@ export default function App() {
     })();
   }, [session?.token]);
 
-  // ---------- LOGIN ----------
   const handleLoginSuccess = async payload => {
     const token = payload?.token;
     if (!token) return Alert.alert('Login failed');
@@ -596,9 +585,7 @@ export default function App() {
     go('RECEIPT');
   };
 
-  // ✅ NEW: Cancel Transaction handler (used by CheckoutScreen)
   const handleCancelTransaction = () => {
-    // Discard amount/tip and return to Terminal
     setReceipt(null);
     setChargeData(null);
     setStripeEnabled(false);
@@ -626,7 +613,6 @@ export default function App() {
 
       await paymentRef.current.ensureInit?.();
 
-      // ✅ Ensure permissions before connecting
       setTerminalStatusLine('Requesting Bluetooth permissions…');
       const ok = await ensureAndroidBlePermissions();
       if (!ok) {
@@ -668,7 +654,6 @@ export default function App() {
     go('RECEIPT');
   };
 
-  // ---------- UI ----------
   if (booting) {
     return (
       <SafeAreaView
@@ -720,6 +705,7 @@ export default function App() {
           onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
           onGoToSales={() => go('SALES')}
+          onGoToTransactions={() => go('TRANSACTIONS')}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
@@ -728,7 +714,6 @@ export default function App() {
             const gate = await gateVerifyOrLogout('PRE_CONNECT_READER');
             if (!gate.ok) return;
 
-            // ✅ Ensure permissions before connecting
             setTerminalStatusLine('Requesting Bluetooth permissions…');
             const ok = await ensureAndroidBlePermissions();
             if (!ok) {
@@ -784,6 +769,11 @@ export default function App() {
         />
       );
 
+    if (screen === 'TRANSACTIONS')
+      return (
+        <TodayTransactionsScreen theme={theme} onBack={() => go('TERMINAL')} />
+      );
+
     if (screen === 'FIXED_TIP')
       return (
         <FixedTipScreen
@@ -819,7 +809,7 @@ export default function App() {
           theme={theme}
           chargeData={chargeData}
           onBack={() => go('TIP')}
-          onCancel={handleCancelTransaction} // ✅ FIX: wire Cancel Transaction
+          onCancel={handleCancelTransaction}
           onCashConfirm={handleCashReceipt}
           onCardConfirm={handleCardConfirm}
           isBusy={isReaderBusy}
@@ -848,7 +838,6 @@ export default function App() {
 
   const showFloatingToggle = screen !== 'CORP' && screen !== 'STORE';
 
-  // ✅ Provider should stay mounted. Do NOT key-toggle it.
   return (
     <StripeTerminalProvider tokenProvider={tokenProvider} logLevel="verbose">
       <SafeAreaView style={{flex: 1, backgroundColor: theme.bg, paddingTop: 0}}>
@@ -878,7 +867,6 @@ export default function App() {
 
         {content}
 
-        {/* ✅ IMPORTANT: Always mount PaymentTerminal when logged in so ref is always ready */}
         {!!session?.token ? (
           <PaymentTerminal
             ref={paymentRef}
