@@ -8,7 +8,6 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
-  Linking,
   Alert,
   Modal,
   TextInput,
@@ -17,6 +16,10 @@ import * as Keychain from 'react-native-keychain';
 
 const TXN_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
+
+// ✅ same email receipt backend used by ReceiptScreen
+const EMAIL_RECEIPT_URL = 'https://agspay.us/email/receipt.php';
+const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
 
 async function readAgpayAuthToken() {
   try {
@@ -56,6 +59,13 @@ function safeJsonParse(x) {
   }
 }
 
+function escapeHtml(input) {
+  return String(input ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function getEpochMs(t) {
   const n = Number(t?.serverEpochMs ?? t?.clientEpochMs ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -79,6 +89,26 @@ function getSubtotalCents(t) {
   return Number(t?.subtotalCents ?? t?.debugMeta?.subtotalCents ?? 0) || 0;
 }
 
+function getTaxCents(t) {
+  return Number(t?.taxCents ?? t?.debugMeta?.taxCents ?? 0) || 0;
+}
+
+function getTipCents(t) {
+  return Number(t?.tipCents ?? t?.debugMeta?.tipCents ?? 0) || 0;
+}
+
+function getServiceFeeCents(t) {
+  return (
+    Number(
+      t?.albaFeeCents ??
+        t?.serviceFeeCents ??
+        t?.debugMeta?.albaFeeCents ??
+        t?.debugMeta?.serviceFeeCents ??
+        0,
+    ) || 0
+  );
+}
+
 function getCardCountry(t) {
   return String(
     t?.cardCountry ||
@@ -96,15 +126,21 @@ function getCardCountry(t) {
   ).trim();
 }
 
-function getReceiptUrl(t) {
+function getCardLast4(t) {
   return String(
-    t?.receiptUrl ||
-      t?.receipt_url ||
-      t?.emailReceiptUrl ||
-      t?.email_receipt_url ||
-      t?.stripe?.receipt_url ||
-      t?.stripe?.charges?.data?.[0]?.receipt_url ||
-      t?.stripe?.charges?.[0]?.receipt_url ||
+    t?.cardLast4 ||
+      t?.last4 ||
+      t?.debugMeta?.cardLast4 ||
+      t?.debugMeta?.last4 ||
+      t?.stripe?.payment_method_details?.card_present?.last4 ||
+      t?.stripe?.payment_method_details?.cardPresent?.last4 ||
+      t?.stripe?.charges?.data?.[0]?.payment_method_details?.card_present
+        ?.last4 ||
+      t?.stripe?.charges?.data?.[0]?.payment_method_details?.cardPresent
+        ?.last4 ||
+      t?.stripe?.charges?.[0]?.paymentMethodDetails?.cardPresentDetails
+        ?.last4 ||
+      t?.stripe?.charges?.[0]?.payment_method_details?.card_present?.last4 ||
       '',
   ).trim();
 }
@@ -128,6 +164,11 @@ function formatTime(epochMs) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(epochMs));
+}
+
+function formatCreatedAtText(epochMs) {
+  if (!epochMs) return '';
+  return new Date(epochMs).toLocaleString();
 }
 
 function isValidStorePrefix(value) {
@@ -183,6 +224,140 @@ function extractStorePrefix(selection) {
   return '';
 }
 
+function isValidEmail(email) {
+  const e = String(email || '').trim();
+  if (!e) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function buildReceiptHtmlFromTxn(txn, storeNameOverride = '') {
+  const totalCents = getTxnAmountCents(txn);
+  const subtotalCents = getSubtotalCents(txn);
+  const taxCents = getTaxCents(txn);
+  const tipCents = getTipCents(txn);
+  const albaFeeCents = getServiceFeeCents(txn);
+  const createdAtText = formatCreatedAtText(getEpochMs(txn));
+  const storeName =
+    storeNameOverride || txn?.storeName || txn?.corporateName || 'AGPay';
+
+  const last4 = getCardLast4(txn);
+  const country = getCardCountry(txn);
+
+  const cardLine = last4
+    ? `Card • CARD • •••• ${last4}${country ? ` • ${country}` : ''}`
+    : country
+    ? `Card • CARD • ${country}`
+    : '';
+
+  return `
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #fff; }
+      body {
+        font-family: monospace;
+        font-size: 18px;
+        line-height: 1.15;
+        color: #000;
+        box-sizing: border-box;
+      }
+      .wrap { padding: 14px 16px; max-width: 420px; margin: 0 auto; }
+      .brand { text-align: center; margin-top: 6px; }
+      .brand .logo { font-weight: 900; letter-spacing: 2px; font-size: 22px; }
+      .brand .sub { margin-top: 2px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; }
+      .copyTag {
+        margin-top: 6px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      .divider { border-top: 1px solid #000; margin: 12px 0; }
+      .meta { font-size: 14px; margin: 2px 0; }
+      .meta .k { opacity: 0.75; }
+      .meta .v { font-weight: 900; }
+      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      td { padding: 3px 0; vertical-align: top; overflow: hidden; }
+      td.l { width: 60%; white-space: nowrap; text-overflow: ellipsis; }
+      td.r { width: 40%; text-align: right; white-space: nowrap; font-weight: 900; }
+      .totalWrap {
+        border-top: 1px solid #000;
+        border-bottom: 1px solid #000;
+        padding: 10px 0;
+        margin-top: 10px;
+      }
+      .totalRow { display: flex; justify-content: space-between; align-items: baseline; }
+      .totalLabel { font-size: 16px; font-weight: 900; letter-spacing: 1px; }
+      .totalValue { font-size: 22px; font-weight: 900; }
+      .footer { text-align: center; margin-top: 12px; padding-bottom: 10px; }
+      .thanks { font-weight: 900; letter-spacing: 1px; text-transform: uppercase; font-size: 14px; }
+      .fine { font-size: 11px; opacity: 0.9; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="brand">
+        <div class="logo">AGPAY</div>
+        <div class="sub">RECEIPT</div>
+      </div>
+
+      <div class="copyTag">CLIENT COPY</div>
+
+      <div class="divider"></div>
+
+      <div class="meta"><span class="k">Transaction Date</span>: <span class="v">${escapeHtml(
+        createdAtText,
+      )}</span></div>
+      <div class="meta"><span class="k">Location</span>: <span class="v">${escapeHtml(
+        storeName,
+      )}</span></div>
+
+      <div class="divider"></div>
+
+      <div class="meta"><span class="k">Payment Method</span>: <span class="v">CARD</span></div>
+      ${
+        cardLine
+          ? `<div class="meta"><span class="v">${escapeHtml(
+              cardLine,
+            )}</span></div>`
+          : ''
+      }
+
+      <div class="divider"></div>
+
+      <table>
+        <tr><td class="l">Subtotal</td><td class="r">${escapeHtml(
+          centsToUsd(subtotalCents),
+        )}</td></tr>
+        <tr><td class="l">Sales Tax</td><td class="r">${escapeHtml(
+          centsToUsd(taxCents),
+        )}</td></tr>
+        <tr><td class="l">Service Fee</td><td class="r">${escapeHtml(
+          centsToUsd(albaFeeCents),
+        )}</td></tr>
+        <tr><td class="l">Tip</td><td class="r">${escapeHtml(
+          centsToUsd(tipCents),
+        )}</td></tr>
+      </table>
+
+      <div class="totalWrap">
+        <div class="totalRow">
+          <div class="totalLabel">TOTAL</div>
+          <div class="totalValue">${escapeHtml(centsToUsd(totalCents))}</div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div class="thanks">Thank you for choosing AGPay</div>
+        <div class="fine">Luxury-grade payments • Secure • Trusted</div>
+      </div>
+    </div>
+  </body>
+  </html>`;
+}
+
 export default function TodayTransactionsScreen({onBack, theme}) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -193,6 +368,7 @@ export default function TodayTransactionsScreen({onBack, theme}) {
   const [selectedTxn, setSelectedTxn] = useState(null);
   const [emailModalVisible, setEmailModalVisible] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState('');
+  const [busyEmail, setBusyEmail] = useState(false);
 
   const t = useMemo(() => {
     return {
@@ -204,6 +380,7 @@ export default function TodayTransactionsScreen({onBack, theme}) {
       border: theme?.border ?? '#1f2937',
       gold: theme?.gold ?? '#d4af37',
       danger: theme?.danger ?? '#ef4444',
+      goldText: theme?.goldText ?? '#020617',
     };
   }, [theme]);
 
@@ -305,44 +482,118 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
   const handleEmailReceipt = async () => {
     try {
+      if (busyEmail) return;
+
       if (!selectedTxn) {
         Alert.alert('Receipt', 'No transaction selected.');
         return;
       }
 
       const to = String(receiptEmail || '').trim();
-      if (!to) {
-        Alert.alert('Email receipt', 'Please enter an email address.');
+      if (!isValidEmail(to)) {
+        Alert.alert('Invalid email', 'Please enter a valid email address.');
         return;
       }
 
-      const receiptUrl = getReceiptUrl(selectedTxn);
-      if (!receiptUrl) {
-        Alert.alert('Receipt', 'No receipt link found for this transaction.');
-        return;
-      }
+      setBusyEmail(true);
 
-      const subject = encodeURIComponent('Your AGPay Receipt');
-      const body = encodeURIComponent(`Here is your receipt:\n\n${receiptUrl}`);
+      const subtotalCents = getSubtotalCents(selectedTxn);
+      const taxCents = getTaxCents(selectedTxn);
+      const tipCents = getTipCents(selectedTxn);
+      const albaFeeCents = getServiceFeeCents(selectedTxn);
+      const totalCents = getTxnAmountCents(selectedTxn);
 
-      const mailto = `mailto:${encodeURIComponent(
+      const htmlClient = buildReceiptHtmlFromTxn(selectedTxn, storeName);
+
+      const payload = {
         to,
-      )}?subject=${subject}&body=${body}`;
-      const supported = await Linking.canOpenURL(mailto);
+        storeName:
+          storeName ||
+          selectedTxn?.storeName ||
+          selectedTxn?.corporateName ||
+          'AGPay',
+        createdAtText: formatCreatedAtText(getEpochMs(selectedTxn)),
+        paymentMethod: 'CARD',
+        receiptId:
+          selectedTxn?.txnKey ||
+          selectedTxn?.stripe?.paymentIntentId ||
+          selectedTxn?.stripe?.chargeId ||
+          '',
 
-      if (!supported) {
-        Alert.alert(
-          'Email receipt',
-          'No mail app is available on this device.',
-        );
-        return;
+        subtotalText: centsToUsd(subtotalCents),
+        taxText: centsToUsd(taxCents),
+        tipText: centsToUsd(tipCents),
+        totalText: centsToUsd(totalCents),
+
+        items: [
+          {
+            name: 'Subtotal',
+            qty: 1,
+            priceText: centsToUsd(subtotalCents),
+          },
+          {
+            name: 'Sales Tax',
+            qty: 1,
+            priceText: centsToUsd(taxCents),
+          },
+          {
+            name: 'Service Fee',
+            qty: 1,
+            priceText: centsToUsd(albaFeeCents),
+          },
+          {
+            name: 'Tip',
+            qty: 1,
+            priceText: centsToUsd(tipCents),
+          },
+        ].filter(x => x.priceText !== '$0.00'),
+
+        notes:
+          'Thank you for choosing AGPay. Your confirmation has been recorded securely. If anything looks unfamiliar, reply to this email and our team will assist promptly.',
+
+        htmlClient,
+      };
+
+      console.log(
+        '📧 TodayTransactionsScreen Email Receipt => POST',
+        EMAIL_RECEIPT_URL,
+      );
+      console.log('📧 TodayTransactionsScreen Email Receipt payload:', payload);
+
+      const resp = await fetch(EMAIL_RECEIPT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AGPAY-KEY': AGPAY_EMAIL_KEY,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await resp.text();
+      console.log(
+        '📧 TodayTransactionsScreen Email Receipt => HTTP',
+        resp.status,
+        text,
+      );
+
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${text}`);
       }
 
-      await Linking.openURL(mailto);
+      const json = safeJsonParse(text);
+      if (json && json.ok === true) {
+        Alert.alert('Sent', `Receipt emailed to:\n${to}`);
+      } else {
+        Alert.alert('Sent', `Receipt request completed.\n\nServer:\n${text}`);
+      }
+
       setEmailModalVisible(false);
+      setReceiptEmail('');
     } catch (e) {
-      console.log('handleEmailReceipt error:', e);
-      Alert.alert('Email receipt', 'Failed to open email composer.');
+      console.log('TodayTransactionsScreen handleEmailReceipt error:', e);
+      Alert.alert('Email failed', String(e?.message || e));
+    } finally {
+      setBusyEmail(false);
     }
   };
 
@@ -351,6 +602,7 @@ export default function TodayTransactionsScreen({onBack, theme}) {
     const totalAmount = getTxnAmountCents(item);
     const subtotal = getSubtotalCents(item);
     const country = getCardCountry(item);
+    const last4 = getCardLast4(item);
 
     return (
       <View
@@ -397,6 +649,16 @@ export default function TodayTransactionsScreen({onBack, theme}) {
                 fontWeight: '700',
               }}>
               Country: {country || '-'}
+            </Text>
+
+            <Text
+              style={{
+                color: t.muted,
+                fontSize: 13,
+                marginTop: 2,
+                fontWeight: '700',
+              }}>
+              Last 4: {last4 || '-'}
             </Text>
 
             <Text
@@ -629,6 +891,19 @@ export default function TodayTransactionsScreen({onBack, theme}) {
                 marginTop: 12,
                 marginBottom: 6,
               }}>
+              Last 4
+            </Text>
+            <Text style={{color: t.text, fontWeight: '800'}}>
+              {selectedTxn ? getCardLast4(selectedTxn) || '-' : '-'}
+            </Text>
+
+            <Text
+              style={{
+                color: t.muted,
+                fontWeight: '700',
+                marginTop: 12,
+                marginBottom: 6,
+              }}>
               Status
             </Text>
             <Text style={{color: t.text, fontWeight: '800'}}>
@@ -687,15 +962,17 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
               <Pressable
                 onPress={handleEmailReceipt}
+                disabled={busyEmail}
                 style={{
                   flex: 1,
                   backgroundColor: t.gold,
                   borderRadius: 12,
                   paddingVertical: 12,
                   alignItems: 'center',
+                  opacity: busyEmail ? 0.6 : 1,
                 }}>
                 <Text style={{color: '#020617', fontWeight: '900'}}>
-                  Email Receipt
+                  {busyEmail ? 'Sending…' : 'Email Receipt'}
                 </Text>
               </Pressable>
             </View>
