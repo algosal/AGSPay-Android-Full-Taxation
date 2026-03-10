@@ -17,21 +17,24 @@ import * as Keychain from 'react-native-keychain';
 const TXN_URL =
   'https://kvscjsddkd.execute-api.us-east-2.amazonaws.com/prod/VendioTransactions';
 
-// ✅ same email receipt backend used by ReceiptScreen
 const EMAIL_RECEIPT_URL = 'https://agspay.us/email/receipt.php';
 const AGPAY_EMAIL_KEY = 'TEST_SECRET_123';
+
+/* ---------------- AUTH HELPERS ---------------- */
 
 async function readAgpayAuthToken() {
   try {
     const tokenCreds = await Keychain.getGenericPassword({
       service: 'agpayAuthToken',
     });
+
     if (tokenCreds?.password && typeof tokenCreds.password === 'string') {
       return tokenCreds.password;
     }
 
     const creds = await Keychain.getInternetCredentials('agpayAuth');
     if (!creds?.password) return null;
+
     const parsed = JSON.parse(creds.password);
     return parsed?.token || null;
   } catch (e) {
@@ -50,6 +53,8 @@ async function readAgpaySelection() {
     return null;
   }
 }
+
+/* ---------------- UTILITIES ---------------- */
 
 function safeJsonParse(x) {
   try {
@@ -109,19 +114,17 @@ function getServiceFeeCents(t) {
   );
 }
 
+function getPayoutCents(t) {
+  return Number(t?.payoutAmountCents ?? 0) || 0;
+}
+
 function getCardCountry(t) {
   return String(
     t?.cardCountry ||
       t?.debugMeta?.cardCountry ||
       t?.stripe?.payment_method_details?.card_present?.country ||
-      t?.stripe?.payment_method_details?.cardPresent?.country ||
       t?.stripe?.charges?.data?.[0]?.payment_method_details?.card_present
         ?.country ||
-      t?.stripe?.charges?.data?.[0]?.payment_method_details?.cardPresent
-        ?.country ||
-      t?.stripe?.charges?.[0]?.paymentMethodDetails?.cardPresentDetails
-        ?.country ||
-      t?.stripe?.charges?.[0]?.payment_method_details?.card_present?.country ||
       '',
   ).trim();
 }
@@ -129,18 +132,10 @@ function getCardCountry(t) {
 function getCardLast4(t) {
   return String(
     t?.cardLast4 ||
-      t?.last4 ||
       t?.debugMeta?.cardLast4 ||
-      t?.debugMeta?.last4 ||
       t?.stripe?.payment_method_details?.card_present?.last4 ||
-      t?.stripe?.payment_method_details?.cardPresent?.last4 ||
       t?.stripe?.charges?.data?.[0]?.payment_method_details?.card_present
         ?.last4 ||
-      t?.stripe?.charges?.data?.[0]?.payment_method_details?.cardPresent
-        ?.last4 ||
-      t?.stripe?.charges?.[0]?.paymentMethodDetails?.cardPresentDetails
-        ?.last4 ||
-      t?.stripe?.charges?.[0]?.payment_method_details?.card_present?.last4 ||
       '',
   ).trim();
 }
@@ -171,17 +166,6 @@ function formatCreatedAtText(epochMs) {
   return new Date(epochMs).toLocaleString();
 }
 
-function isValidStorePrefix(value) {
-  const s = String(value || '').trim();
-  if (!s.startsWith('CORP#')) return false;
-  if (!s.includes('#STORE#')) return false;
-
-  const afterStore = s.split('#STORE#')[1] || '';
-  if (afterStore.trim().startsWith('CORP#')) return false;
-
-  return true;
-}
-
 function extractStoreName(selection) {
   return String(
     selection?.storeName ||
@@ -192,31 +176,17 @@ function extractStoreName(selection) {
 }
 
 function extractStorePrefix(selection) {
-  if (!selection || typeof selection !== 'object') return '';
-
   const candidates = [
     selection?.corpStoreKey,
     selection?.storePrefix,
-    selection?.store_prefix,
     selection?.storeKey,
-    selection?.store_key,
-    selection?.storePk,
-    selection?.storePK,
-    selection?.sk,
     selection?.selectedStore?.corpStoreKey,
-    selection?.selectedStore?.storePrefix,
-    selection?.selectedStore?.store_key,
-    selection?.selectedStore?.storeKey,
     selection?.store?.corpStoreKey,
-    selection?.store?.storePrefix,
-    selection?.store?.store_key,
-    selection?.store?.storeKey,
-    selection?.storeRef,
   ];
 
   for (const c of candidates) {
     const s = String(c || '').trim();
-    if (isValidStorePrefix(s)) {
+    if (s.startsWith('CORP#') && s.includes('#STORE#')) {
       return s;
     }
   }
@@ -226,7 +196,6 @@ function extractStorePrefix(selection) {
 
 function isValidEmail(email) {
   const e = String(email || '').trim();
-  if (!e) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
@@ -358,6 +327,8 @@ function buildReceiptHtmlFromTxn(txn, storeNameOverride = '') {
   </html>`;
 }
 
+/* ---------------- SCREEN ---------------- */
+
 export default function TodayTransactionsScreen({onBack, theme}) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -380,7 +351,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
       border: theme?.border ?? '#1f2937',
       gold: theme?.gold ?? '#d4af37',
       danger: theme?.danger ?? '#ef4444',
-      goldText: theme?.goldText ?? '#020617',
     };
   }, [theme]);
 
@@ -392,72 +362,33 @@ export default function TodayTransactionsScreen({onBack, theme}) {
       setErr('');
 
       const token = await readAgpayAuthToken();
-      if (!token) {
-        throw new Error('Missing JWT token. Please log in again.');
-      }
-
       const selection = await readAgpaySelection();
-      console.log('TodayTransactionsScreen selection:', selection);
-
-      const currentStoreName = extractStoreName(selection);
-      setStoreName(currentStoreName || 'Store');
 
       const storePrefix = extractStorePrefix(selection);
-      console.log('TodayTransactionsScreen storePrefix:', storePrefix);
+      const currentStoreName = extractStoreName(selection);
 
-      if (!storePrefix) {
-        throw new Error('Missing valid full storePrefix in agpaySelection.');
-      }
+      setStoreName(currentStoreName);
 
-      const url = `${TXN_URL}?storePrefix=${encodeURIComponent(storePrefix)}`;
-      console.log('TodayTransactionsScreen GET:', url);
-
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: token,
-          'Content-Type': 'application/json',
+      const resp = await fetch(
+        `${TXN_URL}?storePrefix=${encodeURIComponent(storePrefix)}`,
+        {
+          headers: {Authorization: token},
         },
-      });
+      );
 
       const text = await resp.text();
-      console.log('TodayTransactionsScreen HTTP:', resp.status, text);
-
-      if (!resp.ok) {
-        throw new Error(
-          `Failed to load transactions: HTTP ${resp.status}. Body: ${text}`,
-        );
-      }
-
       let outer = safeJsonParse(text);
-      if (!outer) {
-        throw new Error('Transactions API returned non-JSON response.');
-      }
-
-      let data = outer;
-
-      if (Array.isArray(outer)) {
-        data = outer;
-      } else if (typeof outer?.body === 'string') {
-        const inner = safeJsonParse(outer.body);
-        data = inner || [];
-      } else if (outer?.body && Array.isArray(outer.body)) {
-        data = outer.body;
-      }
+      let data = outer?.body ? safeJsonParse(outer.body) : outer;
 
       const arr = Array.isArray(data) ? data : [];
-      console.log('TodayTransactionsScreen parsed rows:', arr.length);
 
       const filtered = arr
         .filter(txn => !isPayoutEventRow(txn))
         .filter(txn => isToday(getEpochMs(txn)))
         .sort((a, b) => getEpochMs(b) - getEpochMs(a));
 
-      console.log('TodayTransactionsScreen today rows:', filtered.length);
-
       setRows(filtered);
     } catch (e) {
-      console.log('TodayTransactionsScreen load error:', e);
       setErr(String(e?.message || e));
       setRows([]);
     } finally {
@@ -554,12 +485,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
         htmlClient,
       };
 
-      console.log(
-        '📧 TodayTransactionsScreen Email Receipt => POST',
-        EMAIL_RECEIPT_URL,
-      );
-      console.log('📧 TodayTransactionsScreen Email Receipt payload:', payload);
-
       const resp = await fetch(EMAIL_RECEIPT_URL, {
         method: 'POST',
         headers: {
@@ -570,11 +495,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
       });
 
       const text = await resp.text();
-      console.log(
-        '📧 TodayTransactionsScreen Email Receipt => HTTP',
-        resp.status,
-        text,
-      );
 
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${text}`);
@@ -611,78 +531,29 @@ export default function TodayTransactionsScreen({onBack, theme}) {
           borderColor: t.border,
           borderWidth: 1,
           borderRadius: 14,
-          paddingHorizontal: 14,
-          paddingVertical: 14,
+          padding: 14,
           marginBottom: 10,
         }}>
         <View
           style={{
             flexDirection: 'row',
-            alignItems: 'flex-start',
             justifyContent: 'space-between',
           }}>
-          <View style={{flex: 1, paddingRight: 10}}>
-            <Text
-              style={{
-                color: t.text,
-                fontSize: 18,
-                fontWeight: '800',
-              }}>
+          <View style={{flex: 1}}>
+            <Text style={{color: t.text, fontSize: 18, fontWeight: '800'}}>
               {formatTime(epoch)}
             </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontSize: 13,
-                marginTop: 4,
-                fontWeight: '700',
-              }}>
+            <Text style={{color: t.muted}}>
               Subtotal: {centsToUsd(subtotal)}
             </Text>
-
-            <Text
-              style={{
-                color: t.muted,
-                fontSize: 13,
-                marginTop: 2,
-                fontWeight: '700',
-              }}>
-              Country: {country || '-'}
-            </Text>
-
-            <Text
-              style={{
-                color: t.muted,
-                fontSize: 13,
-                marginTop: 2,
-                fontWeight: '700',
-              }}>
-              Last 4: {last4 || '-'}
-            </Text>
-
-            <Text
-              style={{
-                color: t.muted,
-                fontSize: 13,
-                marginTop: 2,
-                fontWeight: '700',
-              }}>
-              Payment Successful
-            </Text>
+            <Text style={{color: t.muted}}>Country: {country || '-'}</Text>
+            <Text style={{color: t.muted}}>Last 4: {last4 || '-'}</Text>
+            <Text style={{color: t.muted}}>Payment Successful</Text>
           </View>
 
-          <Pressable
-            onPress={() => openEmailModal(item)}
-            style={{
-              alignItems: 'flex-end',
-            }}>
-            <Text
-              style={{
-                color: t.gold,
-                fontSize: 20,
-                fontWeight: '900',
-              }}>
+          <Pressable onPress={() => openEmailModal(item)}>
+            <Text style={{color: t.gold, fontSize: 20, fontWeight: '900'}}>
               {centsToUsd(totalAmount)}
             </Text>
           </Pressable>
@@ -693,10 +564,10 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
   return (
     <View style={{flex: 1, backgroundColor: t.bg, padding: 16}}>
+      {/* HEADER */}
       <View
         style={{
           flexDirection: 'row',
-          alignItems: 'center',
           justifyContent: 'space-between',
           marginBottom: 14,
         }}>
@@ -712,23 +583,9 @@ export default function TodayTransactionsScreen({onBack, theme}) {
           }}>
           <Text style={{color: t.text, fontWeight: '800'}}>Back</Text>
         </Pressable>
-
-        <Pressable
-          onPress={() => loadTransactions(false)}
-          style={{
-            backgroundColor: t.inputBg,
-            borderColor: t.border,
-            borderWidth: 1,
-            borderRadius: 12,
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-          }}>
-          <Text style={{color: t.gold, fontWeight: '800', fontSize: 18}}>
-            🔄
-          </Text>
-        </Pressable>
       </View>
 
+      {/* CARD */}
       <View
         style={{
           flex: 1,
@@ -738,74 +595,25 @@ export default function TodayTransactionsScreen({onBack, theme}) {
           borderRadius: 16,
           padding: 16,
         }}>
-        <Text
-          style={{
-            color: t.text,
-            fontSize: 24,
-            fontWeight: '900',
-          }}>
+        <Text style={{color: t.text, fontSize: 24, fontWeight: '900'}}>
           Transactions
         </Text>
 
-        <Text
-          style={{
-            color: t.muted,
-            fontSize: 14,
-            marginTop: 4,
-          }}>
-          {storeName}
-        </Text>
+        <Text style={{color: t.muted}}>{storeName}</Text>
 
-        <Text
-          style={{
-            color: t.gold,
-            fontSize: 16,
-            fontWeight: '800',
-            marginTop: 10,
-            marginBottom: 14,
-          }}>
+        <Text style={{color: t.gold, fontWeight: '800', marginVertical: 10}}>
           Total Today: {centsToUsd(totalTodayCents)}
         </Text>
 
         {loading ? (
-          <View
-            style={{flex: 1, alignItems: 'center', justifyContent: 'center'}}>
-            <ActivityIndicator size="large" color={t.gold} />
-            <Text style={{color: t.muted, marginTop: 10}}>Loading…</Text>
-          </View>
-        ) : err ? (
-          <View style={{flex: 1, justifyContent: 'center'}}>
-            <Text
-              style={{
-                color: t.danger,
-                fontSize: 15,
-                fontWeight: '700',
-                textAlign: 'center',
-              }}>
-              {err}
-            </Text>
-          </View>
-        ) : rows.length === 0 ? (
-          <View style={{flex: 1, justifyContent: 'center'}}>
-            <Text
-              style={{
-                color: t.muted,
-                textAlign: 'center',
-                fontSize: 15,
-              }}>
-              No transactions found for today.
-            </Text>
-          </View>
+          <ActivityIndicator color={t.gold} />
         ) : (
           <FlatList
             data={rows}
             keyExtractor={(item, index) =>
-              String(
-                item?.txnKey || item?.txuuid || `${getEpochMs(item)}-${index}`,
-              )
+              String(item?.txnKey || `${getEpochMs(item)}-${index}`)
             }
             renderItem={renderRow}
-            showsVerticalScrollIndicator={false}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -817,6 +625,26 @@ export default function TodayTransactionsScreen({onBack, theme}) {
         )}
       </View>
 
+      {/* FLOATING REFRESH BUTTON */}
+      <Pressable
+        onPress={() => loadTransactions(false)}
+        style={{
+          position: 'absolute',
+          right: 20,
+          bottom: 30,
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: t.inputBg,
+          borderColor: t.border,
+          borderWidth: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
+        <Text style={{fontSize: 24, color: t.gold}}>🔄</Text>
+      </Pressable>
+
+      {/* EMAIL MODAL */}
       <Modal
         visible={emailModalVisible}
         transparent
@@ -837,88 +665,62 @@ export default function TodayTransactionsScreen({onBack, theme}) {
               borderRadius: 18,
               padding: 18,
             }}>
-            <Text
-              style={{
-                color: t.text,
-                fontSize: 20,
-                fontWeight: '900',
-                marginBottom: 12,
-              }}>
+            <Text style={{color: t.text, fontSize: 20, fontWeight: '900'}}>
               Email Receipt
             </Text>
 
-            <Text style={{color: t.muted, fontWeight: '700', marginBottom: 6}}>
-              Amount
-            </Text>
-            <Text style={{color: t.gold, fontWeight: '900', fontSize: 18}}>
+            <Text style={{color: t.muted, marginTop: 14}}>Total</Text>
+            <Text style={{color: t.gold, fontSize: 20, fontWeight: '900'}}>
               {selectedTxn
                 ? centsToUsd(getTxnAmountCents(selectedTxn))
                 : '$0.00'}
             </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontWeight: '700',
-                marginTop: 12,
-                marginBottom: 6,
-              }}>
-              Subtotal
-            </Text>
-            <Text style={{color: t.text, fontWeight: '800'}}>
-              {selectedTxn
-                ? centsToUsd(getSubtotalCents(selectedTxn))
-                : '$0.00'}
-            </Text>
+            <View style={{marginTop: 16}}>
+              <Text style={{color: t.muted}}>
+                Subtotal:{' '}
+                {selectedTxn
+                  ? centsToUsd(getSubtotalCents(selectedTxn))
+                  : '$0.00'}
+              </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontWeight: '700',
-                marginTop: 12,
-                marginBottom: 6,
-              }}>
-              Country
-            </Text>
-            <Text style={{color: t.text, fontWeight: '800'}}>
-              {selectedTxn ? getCardCountry(selectedTxn) || '-' : '-'}
-            </Text>
+              <Text style={{color: t.muted}}>
+                Tax:{' '}
+                {selectedTxn ? centsToUsd(getTaxCents(selectedTxn)) : '$0.00'}
+              </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontWeight: '700',
-                marginTop: 12,
-                marginBottom: 6,
-              }}>
-              Last 4
-            </Text>
-            <Text style={{color: t.text, fontWeight: '800'}}>
-              {selectedTxn ? getCardLast4(selectedTxn) || '-' : '-'}
-            </Text>
+              <Text style={{color: t.muted}}>
+                Tip:{' '}
+                {selectedTxn ? centsToUsd(getTipCents(selectedTxn)) : '$0.00'}
+              </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontWeight: '700',
-                marginTop: 12,
-                marginBottom: 6,
-              }}>
-              Status
-            </Text>
-            <Text style={{color: t.text, fontWeight: '800'}}>
-              Payment Successful
-            </Text>
+              <Text style={{color: t.muted}}>
+                Service Fee:{' '}
+                {selectedTxn
+                  ? centsToUsd(getServiceFeeCents(selectedTxn))
+                  : '$0.00'}
+              </Text>
 
-            <Text
-              style={{
-                color: t.muted,
-                fontWeight: '700',
-                marginTop: 12,
-                marginBottom: 6,
-              }}>
-              Email
-            </Text>
+              <Text style={{color: t.muted}}>
+                Payout:{' '}
+                {selectedTxn
+                  ? centsToUsd(getPayoutCents(selectedTxn))
+                  : '$0.00'}
+              </Text>
+            </View>
+
+            <View style={{marginTop: 14}}>
+              <Text style={{color: t.muted}}>
+                Country:{' '}
+                {selectedTxn ? getCardCountry(selectedTxn) || '-' : '-'}
+              </Text>
+
+              <Text style={{color: t.muted}}>
+                Last 4: {selectedTxn ? getCardLast4(selectedTxn) || '-' : '-'}
+              </Text>
+
+              <Text style={{color: t.muted}}>Status: Payment Successful</Text>
+            </View>
 
             <TextInput
               value={receiptEmail}
@@ -928,24 +730,20 @@ export default function TodayTransactionsScreen({onBack, theme}) {
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
+              autoComplete="email"
+              textContentType="emailAddress"
               style={{
+                marginTop: 16,
                 color: t.text,
                 backgroundColor: t.inputBg,
                 borderColor: t.border,
                 borderWidth: 1,
                 borderRadius: 12,
-                paddingHorizontal: 12,
-                paddingVertical: 12,
+                padding: 12,
               }}
             />
 
-            <View
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                marginTop: 16,
-                gap: 10,
-              }}>
+            <View style={{flexDirection: 'row', marginTop: 16, gap: 10}}>
               <Pressable
                 onPress={() => setEmailModalVisible(false)}
                 style={{
@@ -954,10 +752,10 @@ export default function TodayTransactionsScreen({onBack, theme}) {
                   borderColor: t.border,
                   borderWidth: 1,
                   borderRadius: 12,
-                  paddingVertical: 12,
+                  padding: 12,
                   alignItems: 'center',
                 }}>
-                <Text style={{color: t.text, fontWeight: '800'}}>Cancel</Text>
+                <Text style={{color: t.text}}>Cancel</Text>
               </Pressable>
 
               <Pressable
@@ -967,11 +765,11 @@ export default function TodayTransactionsScreen({onBack, theme}) {
                   flex: 1,
                   backgroundColor: t.gold,
                   borderRadius: 12,
-                  paddingVertical: 12,
+                  padding: 12,
                   alignItems: 'center',
                   opacity: busyEmail ? 0.6 : 1,
                 }}>
-                <Text style={{color: '#020617', fontWeight: '900'}}>
+                <Text style={{fontWeight: '900'}}>
                   {busyEmail ? 'Sending…' : 'Email Receipt'}
                 </Text>
               </Pressable>
