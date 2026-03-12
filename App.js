@@ -1,7 +1,4 @@
 // FILE: App.js
-//
-// ✅ CHANGE: Connect Stripe Tap to Pay automatically right after login
-// Fixes: "🔥 Warmup: paymentRef not ready yet" by mounting PaymentTerminal whenever logged in.
 
 import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
 import {
@@ -18,7 +15,6 @@ import {
 import {StripeTerminalProvider} from '@stripe/stripe-terminal-react-native';
 import * as Keychain from 'react-native-keychain';
 
-// ✅ KEEP AWAKE (prevents screen from sleeping)
 import KeepAwake from 'react-native-keep-awake';
 
 import Login from './components/Login/Login';
@@ -46,10 +42,10 @@ const VERIFY_ME_URL =
 
 const TAX_RATE = 0.0885;
 
-// ✅ If true: connect right after login (will request location permission on Android)
-const AUTO_CONNECT_READER_ON_LOGIN = true;
+// IMPORTANT:
+// keep this OFF so reader warmup does not hijack NFC mode on app start
+const AUTO_CONNECT_READER_ON_LOGIN = false;
 
-// ---------------------- Android BLE permissions (Stripe Terminal) ----------------------
 async function ensureAndroidBlePermissions() {
   if (Platform.OS !== 'android') return true;
 
@@ -79,15 +75,7 @@ async function ensureAndroidBlePermissions() {
       results[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
       'granted';
 
-    const ok = scanOk && connectOk && locOk;
-
-    if (!ok) {
-      console.log('❌ BLE permissions denied:', results);
-    } else {
-      console.log('✅ BLE permissions granted:', results);
-    }
-
-    return ok;
+    return scanOk && connectOk && locOk;
   } catch (e) {
     console.log('ensureAndroidBlePermissions error:', e);
     return false;
@@ -117,8 +105,6 @@ function calcServiceFeeCents(baseCents) {
   const fee = percentPart + fixedPart + extra;
   return Math.max(5, fee);
 }
-
-// ---------------------- Keychain helpers ----------------------
 
 async function readAgpayAuthToken() {
   try {
@@ -196,8 +182,6 @@ async function clearWarmupFlag() {
     await Keychain.resetGenericPassword({service: 'agpayWarmupTerminal'});
   } catch {}
 }
-
-// ---------------------- VerifyMe (pk only) ----------------------
 
 function normalizeUserPk(raw) {
   const s = String(raw || '').trim();
@@ -323,6 +307,7 @@ export default function App() {
 
   const [terminalStatusLine, setTerminalStatusLine] = useState('');
   const [stripeEnabled, setStripeEnabled] = useState(false);
+  const [paymentDeviceMode, setPaymentDeviceMode] = useState('reader'); // 'reader' | 'nfc'
 
   const [themeMode, setThemeMode] = useState('dark');
   const theme = useMemo(() => themes[themeMode] || themes.dark, [themeMode]);
@@ -347,7 +332,7 @@ export default function App() {
     setScreen('LOGIN');
   };
 
-  async function gateVerifyOrLogout(where = 'unknown') {
+  async function gateVerifyOrLogout() {
     try {
       const pk = await readUserPkFromKeychain();
       if (!pk) return {ok: true, skipped: true};
@@ -405,7 +390,7 @@ export default function App() {
         if (sess?.token) setSession({token: sess.token});
 
         if (token) {
-          const gate = await gateVerifyOrLogout('BOOT');
+          const gate = await gateVerifyOrLogout();
           if (!gate.ok) {
             setBooting(false);
             return;
@@ -417,7 +402,7 @@ export default function App() {
           setScreen('STORE');
         else if (token) setScreen('CORP');
         else setScreen('LOGIN');
-      } catch (e) {
+      } catch {
         setScreen('LOGIN');
       } finally {
         setBooting(false);
@@ -448,59 +433,49 @@ export default function App() {
         const shouldWarmup = await readWarmupFlag();
         if (!shouldWarmup) return;
 
-        console.log('🔥 Warmup requested (post-login)');
-
         const ready = await waitForPaymentRefReady(8000);
-        if (!ready) {
-          console.log('🔥 Warmup: paymentRef still not ready');
-          return;
-        }
+        if (!ready) return;
 
         warmupRanRef.current = true;
         await clearWarmupFlag();
 
         setStripeEnabled(true);
-
-        console.log('🔥 Warmup => ensureInit()');
         await paymentRef.current.ensureInit?.();
 
         if (AUTO_CONNECT_READER_ON_LOGIN) {
-          setTerminalStatusLine('Requesting Bluetooth permissions…');
-          const ok = await ensureAndroidBlePermissions();
-          if (!ok) {
-            Alert.alert(
-              'Permissions needed',
-              'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
-            );
-            setTerminalStatusLine('');
-            return;
-          }
-
-          console.log('🔌 Warmup => connectReaderFlow()');
           setIsReaderBusy(true);
           try {
-            setTerminalStatusLine('Searching for reader…');
-            await paymentRef.current.connectReaderFlow?.();
+            if (paymentDeviceMode === 'reader') {
+              setTerminalStatusLine('Requesting Bluetooth permissions…');
+              const ok = await ensureAndroidBlePermissions();
+              if (!ok) {
+                setTerminalStatusLine('');
+                return;
+              }
+              setTerminalStatusLine('Searching for reader…');
+            } else {
+              setTerminalStatusLine('Preparing Phone NFC…');
+            }
+
+            await paymentRef.current.connectReaderFlow?.({silent: true});
           } finally {
             setIsReaderBusy(false);
             setTerminalStatusLine('');
           }
         }
-
-        console.log('✅ Warmup complete');
       } catch (e) {
-        console.log('❌ Warmup error:', e);
+        console.log('Warmup error:', e);
         setTerminalStatusLine('');
       }
     })();
-  }, [session?.token]);
+  }, [session?.token, paymentDeviceMode]);
 
   const handleLoginSuccess = async payload => {
     const token = payload?.token;
     if (!token) return Alert.alert('Login failed');
 
     setSession({token});
-    const gate = await gateVerifyOrLogout('LOGIN');
+    const gate = await gateVerifyOrLogout();
     if (!gate.ok) return;
 
     go('CORP');
@@ -526,7 +501,6 @@ export default function App() {
 
     const taxCents = Math.round(subtotalCents * TAX_RATE);
     const baseBeforeTipCents = subtotalCents + taxCents;
-
     const albaFeeCents = calcServiceFeeCents(baseBeforeTipCents);
     const totalCents = baseBeforeTipCents + albaFeeCents;
 
@@ -599,7 +573,7 @@ export default function App() {
     startingCardRef.current = true;
 
     try {
-      const gate = await gateVerifyOrLogout('PRE_CARD');
+      const gate = await gateVerifyOrLogout();
       if (!gate.ok) return;
 
       setStripeEnabled(true);
@@ -607,27 +581,34 @@ export default function App() {
 
       const ready = await waitForPaymentRefReady();
       if (!ready) {
-        Alert.alert('Preparing reader', 'Please wait a moment and try again.');
+        Alert.alert(
+          'Preparing terminal',
+          'Please wait a moment and try again.',
+        );
         return;
       }
 
       await paymentRef.current.ensureInit?.();
 
-      setTerminalStatusLine('Requesting Bluetooth permissions…');
-      const ok = await ensureAndroidBlePermissions();
-      if (!ok) {
-        Alert.alert(
-          'Permissions needed',
-          'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
-        );
-        setTerminalStatusLine('');
-        return;
-      }
+      if (paymentDeviceMode === 'reader') {
+        setTerminalStatusLine('Requesting Bluetooth permissions…');
+        const ok = await ensureAndroidBlePermissions();
+        if (!ok) {
+          setTerminalStatusLine('');
+          return;
+        }
 
-      const isConnected = await paymentRef.current.isReaderConnected?.();
-      if (!isConnected) {
-        setTerminalStatusLine('Searching for reader…');
-        await paymentRef.current.connectReaderFlow?.();
+        const isConnected = await paymentRef.current.isReaderConnected?.();
+        if (!isConnected) {
+          setTerminalStatusLine('Searching for reader…');
+          await paymentRef.current.connectReaderFlow?.({mode: 'reader'});
+        }
+      } else {
+        const isConnected = await paymentRef.current.isReaderConnected?.();
+        if (!isConnected) {
+          setTerminalStatusLine('Preparing Phone NFC…');
+          await paymentRef.current.connectReaderFlow?.({mode: 'nfc'});
+        }
       }
 
       setTerminalStatusLine('');
@@ -702,43 +683,61 @@ export default function App() {
       return (
         <TerminalScreen
           theme={theme}
-          onBackToStoreSelect={() => go('STORE')}
           onGoToTip={() => go('AMOUNT')}
           onGoToSales={() => go('SALES')}
           onGoToTransactions={() => go('TRANSACTIONS')}
+          onSetPaymentDeviceMode={async mode => {
+            try {
+              const ready = await waitForPaymentRefReady(1500);
+              if (ready) {
+                try {
+                  await paymentRef.current.disconnectReaderFlow?.();
+                } catch {}
+              }
+            } catch {}
+
+            setPaymentDeviceMode(mode);
+            setReaderStatus({connected: false, label: ''});
+            setTerminalStatusLine('');
+          }}
+          paymentDeviceMode={paymentDeviceMode}
           readerStatus={readerStatus}
           isReaderBusy={isReaderBusy}
           chargeData={chargeData}
           terminalStatusLine={terminalStatusLine}
           onConnectReader={async () => {
-            const gate = await gateVerifyOrLogout('PRE_CONNECT_READER');
+            const gate = await gateVerifyOrLogout();
             if (!gate.ok) return;
-
-            setTerminalStatusLine('Requesting Bluetooth permissions…');
-            const ok = await ensureAndroidBlePermissions();
-            if (!ok) {
-              Alert.alert(
-                'Permissions needed',
-                'Enable Nearby devices (Bluetooth) + Location permissions. Also make sure Location is ON in device settings.',
-              );
-              setTerminalStatusLine('');
-              return;
-            }
 
             setStripeEnabled(true);
 
             const ready = await waitForPaymentRefReady();
             if (!ready) {
-              Alert.alert('Preparing reader', 'Please try again in a moment.');
+              Alert.alert(
+                'Preparing terminal',
+                'Please try again in a moment.',
+              );
               setTerminalStatusLine('');
               return;
             }
 
             setIsReaderBusy(true);
             try {
-              setTerminalStatusLine('Searching for reader…');
-              await paymentRef.current.ensureInit?.();
-              await paymentRef.current.connectReaderFlow?.();
+              if (paymentDeviceMode === 'reader') {
+                setTerminalStatusLine('Requesting Bluetooth permissions…');
+                const ok = await ensureAndroidBlePermissions();
+                if (!ok) {
+                  setTerminalStatusLine('');
+                  return;
+                }
+                setTerminalStatusLine('Searching for reader…');
+                await paymentRef.current.ensureInit?.();
+                await paymentRef.current.connectReaderFlow?.({mode: 'reader'});
+              } else {
+                setTerminalStatusLine('Preparing Phone NFC…');
+                await paymentRef.current.ensureInit?.();
+                await paymentRef.current.connectReaderFlow?.({mode: 'nfc'});
+              }
             } finally {
               setIsReaderBusy(false);
               setTerminalStatusLine('');
@@ -755,6 +754,23 @@ export default function App() {
             } finally {
               setIsReaderBusy(false);
               setTerminalStatusLine('');
+            }
+          }}
+          onRefreshReaderStatus={async () => {
+            const ready = await waitForPaymentRefReady(1500);
+            if (!ready) {
+              Alert.alert(
+                'Preparing terminal',
+                'Please try again in a moment.',
+              );
+              return;
+            }
+
+            setIsReaderBusy(true);
+            try {
+              await paymentRef.current.refreshReaderStatusFlow?.();
+            } finally {
+              setIsReaderBusy(false);
             }
           }}
         />
@@ -874,6 +890,7 @@ export default function App() {
             currency={chargeData?.currency || 'usd'}
             amountLabel={chargeData?.totalLabel || null}
             breakdown={chargeData || null}
+            paymentDeviceMode={paymentDeviceMode}
             onReaderStatusChange={setReaderStatus}
             onPaymentSuccess={handlePaymentSuccess}
             onTerminalStatusLine={setTerminalStatusLine}

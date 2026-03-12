@@ -11,6 +11,7 @@ export default function TerminalContainer(props) {
       {...props}
       onConnectReader={term?.onConnectReader}
       onDisconnectReader={term?.onDisconnectReader}
+      onRefreshReaderStatus={term?.onRefreshReaderStatus}
       readerStatus={term?.readerStatus}
       isReaderBusy={term?.isReaderBusy}
       terminalStatusLine={term?.terminalStatusLine}

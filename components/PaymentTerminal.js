@@ -1,13 +1,4 @@
 // FILE: components/PaymentTerminal.js
-// Purpose: Stripe Terminal wrapper for AGPay using a Bluetooth reader (Stripe Reader M2).
-//
-// ✅ Correct Stripe RN flow:
-// - Call discoverReaders({ discoveryMethod: 'bluetoothScan' }) and DO NOT "await it" to get readers.
-// - Readers arrive via onUpdateDiscoveredReaders callback.
-// - Once a reader appears, cancelDiscovering(), then connectReader().
-//
-// Also:
-// - Do NOT pair the reader in Android Bluetooth settings. If you did, "Forget" it there.
 
 import React, {
   forwardRef,
@@ -17,9 +8,13 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import {Alert, PermissionsAndroid, Platform} from 'react-native';
+import {Alert, PermissionsAndroid, Platform, AppState} from 'react-native';
 import * as Keychain from 'react-native-keychain';
-import {useStripeTerminal} from '@stripe/stripe-terminal-react-native';
+import {
+  useStripeTerminal,
+  TapZoneIndicator,
+  DarkMode,
+} from '@stripe/stripe-terminal-react-native';
 import {TERMINAL_LOCATION_ID} from '../config/stripeTerminal.js';
 
 const CREATE_INTENT_URL =
@@ -30,11 +25,42 @@ const VENDIO_TXN_URL =
 
 const LOCATION_ID = TERMINAL_LOCATION_ID;
 
-// ---------------------- helpers ----------------------
-
 function androidApiLevel() {
   const v = Number(Platform.Version);
   return Number.isFinite(v) ? v : 0;
+}
+
+function normalizeBatteryPercent(raw) {
+  if (typeof raw !== 'number' || Number.isNaN(raw)) return null;
+
+  if (raw >= 0 && raw <= 1) {
+    return Math.round(raw * 100);
+  }
+
+  if (raw >= 0 && raw <= 100) {
+    return Math.round(raw);
+  }
+
+  return null;
+}
+
+async function requestLocationPermissionIfNeeded() {
+  if (Platform.OS !== 'android') return true;
+
+  const granted = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    {
+      title: 'Location Permission',
+      message: 'AGPay uses location to enable Tap to Pay.',
+      buttonPositive: 'OK',
+    },
+  );
+
+  if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+    Alert.alert('Permission required', 'Location permission is required.');
+    return false;
+  }
+  return true;
 }
 
 async function requestBluetoothAndLocationPermissionsIfNeeded() {
@@ -42,15 +68,12 @@ async function requestBluetoothAndLocationPermissionsIfNeeded() {
 
   const api = androidApiLevel();
 
-  // Android 12+ (API 31+)
   if (api >= 31) {
     const results = await PermissionsAndroid.requestMultiple([
       PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
       PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION, // still needed on many devices
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
     ]);
-
-    console.log('✅ BLE permissions granted:', results);
 
     const ok =
       results[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] ===
@@ -70,7 +93,6 @@ async function requestBluetoothAndLocationPermissionsIfNeeded() {
     return true;
   }
 
-  // Android 11 and below
   const loc = await PermissionsAndroid.request(
     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
     {
@@ -330,8 +352,6 @@ async function postTransactionToVendio(txnPayload) {
   }
 }
 
-// ---------------------- component ----------------------
-
 const PaymentTerminal = forwardRef(
   (
     {
@@ -343,9 +363,61 @@ const PaymentTerminal = forwardRef(
       currency = 'usd',
       amountLabel,
       onTerminalStatusLine,
+      paymentDeviceMode = 'reader', // 'reader' | 'nfc'
     },
     ref,
   ) => {
+    const latestBatteryRef = useRef({
+      batteryLevel: null,
+      batteryStatus: null,
+      isCharging: false,
+    });
+
+    const latestReadersRef = useRef([]);
+    const tapToPaySupportedRef = useRef(null);
+    const connectedReaderRef = useRef(null);
+    const paymentDeviceModeRef = useRef(paymentDeviceMode);
+
+    const terminalReadyRef = useRef(false);
+    const initPromiseRef = useRef(null);
+    const connectingRef = useRef(false);
+    const lastDiscoverAtRef = useRef(0);
+
+    const [statusLine, setStatusLine] = useState('Not initialized');
+
+    const publishReaderStatus = useCallback(
+      next => {
+        console.log('📤 publishReaderStatus:', next);
+        onReaderStatusChange?.(next);
+      },
+      [onReaderStatusChange],
+    );
+
+    const buildCurrentReaderStatus = useCallback(reader => {
+      return {
+        connected: true,
+        label:
+          reader?.label ||
+          reader?.serialNumber ||
+          (paymentDeviceModeRef.current === 'nfc'
+            ? 'Tap to Pay Connected'
+            : 'Stripe Reader M2'),
+        serialNumber: reader?.serialNumber || null,
+        id: reader?.id || null,
+        batteryLevel:
+          normalizeBatteryPercent(reader?.batteryLevel) ??
+          latestBatteryRef.current?.batteryLevel,
+        batteryStatus:
+          reader?.batteryStatus ||
+          latestBatteryRef.current?.batteryStatus ||
+          null,
+        isCharging:
+          typeof reader?.isCharging === 'boolean'
+            ? reader.isCharging
+            : !!latestBatteryRef.current?.isCharging,
+      };
+    }, []);
+
     const {
       initialize,
       discoverReaders,
@@ -354,6 +426,8 @@ const PaymentTerminal = forwardRef(
       connectedReader,
       discoveredReaders,
       cancelDiscovering,
+      setTapToPayUxConfiguration,
+      supportsReadersOfType,
       retrievePaymentIntent,
       collectPaymentMethod,
       confirmPaymentIntent,
@@ -361,19 +435,47 @@ const PaymentTerminal = forwardRef(
       onUpdateDiscoveredReaders: readers => {
         console.log('🔎 onUpdateDiscoveredReaders:', readers);
       },
+
+      onDidUpdateBatteryLevel: battery => {
+        console.log('🔋 onDidUpdateBatteryLevel RAW:', battery);
+
+        const normalized = {
+          batteryLevel: normalizeBatteryPercent(battery?.batteryLevel),
+          batteryStatus: battery?.batteryStatus || null,
+          isCharging: !!battery?.isCharging,
+        };
+
+        latestBatteryRef.current = normalized;
+
+        console.log('🔋 normalized battery for UI:', normalized);
+
+        if (connectedReaderRef.current) {
+          const nextStatus = {
+            connected: true,
+            label:
+              connectedReaderRef.current?.label ||
+              connectedReaderRef.current?.serialNumber ||
+              (paymentDeviceModeRef.current === 'nfc'
+                ? 'Tap to Pay Connected'
+                : 'Stripe Reader M2'),
+            serialNumber: connectedReaderRef.current?.serialNumber || null,
+            id: connectedReaderRef.current?.id || null,
+            ...normalized,
+          };
+
+          console.log('📤 publishing battery status to parent:', nextStatus);
+          publishReaderStatus(nextStatus);
+        } else {
+          console.log(
+            '⚠️ battery event arrived but connectedReaderRef.current is empty',
+          );
+        }
+      },
     });
 
-    const [statusLine, setStatusLine] = useState('Not initialized');
-
-    const latestReadersRef = useRef([]);
-    const connectedReaderRef = useRef(null);
-
-    const terminalReadyRef = useRef(false);
-    const initPromiseRef = useRef(null);
-
-    const connectingRef = useRef(false);
-    const discoveringRef = useRef(false);
-    const connectAttemptIdRef = useRef(0);
+    useEffect(() => {
+      paymentDeviceModeRef.current = paymentDeviceMode;
+    }, [paymentDeviceMode]);
 
     useEffect(() => {
       onTerminalStatusLine?.(statusLine);
@@ -387,14 +489,16 @@ const PaymentTerminal = forwardRef(
 
     useEffect(() => {
       connectedReaderRef.current = connectedReader || null;
-    }, [connectedReader]);
+      console.log('🔌 connectedReader changed:', connectedReader);
 
-    const publishReaderStatus = useCallback(
-      next => {
-        onReaderStatusChange?.(next);
-      },
-      [onReaderStatusChange],
-    );
+      if (connectedReader) {
+        console.log('🔋 connectedReader battery snapshot:', {
+          batteryLevel: connectedReader?.batteryLevel,
+          batteryStatus: connectedReader?.batteryStatus,
+          isCharging: connectedReader?.isCharging,
+        });
+      }
+    }, [connectedReader]);
 
     const ensureInit = useCallback(async () => {
       if (terminalReadyRef.current) return true;
@@ -422,6 +526,30 @@ const PaymentTerminal = forwardRef(
           );
         }
 
+        try {
+          await setTapToPayUxConfiguration({
+            tapZone: {
+              tapZoneIndicator: TapZoneIndicator.BACK,
+              tapZonePosition: {xBias: 0.5, yBias: 0.45},
+            },
+            darkMode: DarkMode.DARK,
+          });
+        } catch (e) {
+          console.log('setTapToPayUxConfiguration error:', e);
+        }
+
+        try {
+          const r = await supportsReadersOfType({
+            deviceType: 'tapToPay',
+            discoveryMethod: 'tapToPay',
+          });
+          tapToPaySupportedRef.current = r?.supported ?? null;
+          console.log('supportsReadersOfType(tapToPay):', r);
+        } catch (e) {
+          console.log('supportsReadersOfType error:', e);
+          tapToPaySupportedRef.current = null;
+        }
+
         terminalReadyRef.current = true;
         setStatusLine('Initialized');
         return true;
@@ -432,9 +560,9 @@ const PaymentTerminal = forwardRef(
       } finally {
         initPromiseRef.current = null;
       }
-    }, [initialize]);
+    }, [initialize, setTapToPayUxConfiguration, supportsReadersOfType]);
 
-    async function waitForReaders({timeoutMs = 12000, intervalMs = 250} = {}) {
+    async function waitForReaders({timeoutMs = 8000, intervalMs = 250} = {}) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         const readers = latestReadersRef.current || [];
@@ -445,7 +573,7 @@ const PaymentTerminal = forwardRef(
     }
 
     async function waitForConnectedReader({
-      timeoutMs = 8000,
+      timeoutMs = 5000,
       intervalMs = 150,
     } = {}) {
       const start = Date.now();
@@ -456,157 +584,456 @@ const PaymentTerminal = forwardRef(
       return null;
     }
 
-    const startDiscovery = useCallback(async () => {
-      if (discoveringRef.current) return true;
-      discoveringRef.current = true;
+    async function discoverTapToPayWithTimeout(timeoutMs = 9000) {
+      const discPromise = discoverReaders({
+        discoveryMethod: 'tapToPay',
+        simulated: false,
+      });
 
-      try {
-        setStatusLine('Searching for Bluetooth reader…');
+      const timeoutPromise = new Promise(resolve =>
+        setTimeout(() => resolve({__timeout: true}), timeoutMs),
+      );
 
-        // Fire-and-forget: results arrive via onUpdateDiscoveredReaders / discoveredReaders state
-        discoverReaders({discoveryMethod: 'bluetoothScan', simulated: false})
-          .then(res => {
-            // This promise often resolves when discovery ends (canceled/finished)
-            if (res?.error) {
-              console.log('discoverReaders resolved with error:', res.error);
-            } else {
-              console.log('discoverReaders resolved:', res);
+      const res = await Promise.race([discPromise, timeoutPromise]);
+
+      if (res && res.__timeout) {
+        try {
+          await cancelDiscovering();
+        } catch {}
+        throw new Error('Discover Tap to Pay timed out. Try again.');
+      }
+
+      return res;
+    }
+
+    const connectBluetoothReaderFlow = useCallback(
+      async (opts = {}) => {
+        const silent = !!opts?.silent;
+
+        try {
+          const okPerms =
+            await requestBluetoothAndLocationPermissionsIfNeeded();
+          if (!okPerms) return false;
+
+          if (!LOCATION_ID || !String(LOCATION_ID).startsWith('tml_')) {
+            if (!silent) {
+              Alert.alert(
+                'Location ID missing',
+                'TERMINAL_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+              );
             }
+            return false;
+          }
+
+          try {
+            await cancelDiscovering();
+          } catch {}
+
+          latestReadersRef.current = [];
+          setStatusLine('Searching for Bluetooth reader…');
+
+          discoverReaders({
+            discoveryMethod: 'bluetoothScan',
+            simulated: false,
           })
-          .catch(e => console.log('discoverReaders promise error:', e));
+            .then(res => {
+              if (res?.error) {
+                console.log('discoverReaders(bluetoothScan) error:', res.error);
+              }
+            })
+            .catch(e => console.log('discoverReaders promise error:', e));
 
-        return true;
-      } catch (e) {
-        discoveringRef.current = false;
-        setStatusLine(`Discovery failed: ${String(e?.message || e)}`);
-        return false;
-      }
-    }, [discoverReaders]);
+          const readers = await waitForReaders({timeoutMs: 12000});
+          const chosen =
+            readers.find(r => String(r?.deviceType || '') === 'stripeM2') ||
+            readers.find(r => !r?.simulated) ||
+            readers[0];
 
-    const connectReaderFlow = useCallback(async () => {
-      if (connectingRef.current) return true;
-      if (connectedReaderRef.current) return true;
+          if (!chosen) {
+            setStatusLine('No reader found');
+            publishReaderStatus({
+              connected: false,
+              label: '',
+              batteryLevel: null,
+              batteryStatus: null,
+              isCharging: false,
+            });
+            if (!silent) {
+              Alert.alert(
+                'No reader found',
+                '1) Make sure the M2 is powered on\n2) Make sure you did NOT pair it in Android Bluetooth settings\n3) Bring it close and try again.',
+              );
+            }
+            return false;
+          }
 
-      connectingRef.current = true;
-      const myAttemptId = ++connectAttemptIdRef.current;
+          try {
+            await cancelDiscovering();
+          } catch {}
 
-      try {
-        await ensureInit();
+          setStatusLine('Connecting to reader…');
 
-        const okPerms = await requestBluetoothAndLocationPermissionsIfNeeded();
-        if (!okPerms) return false;
-
-        if (!LOCATION_ID || !String(LOCATION_ID).startsWith('tml_')) {
-          Alert.alert(
-            'Location ID missing',
-            'TERMINAL_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+          const {reader, error} = await connectReader(
+            {reader: chosen, locationId: LOCATION_ID},
+            'bluetoothScan',
           );
+
+          if (error) {
+            throw new Error(error?.message || 'connectReader failed');
+          }
+
+          const cr =
+            reader || (await waitForConnectedReader({timeoutMs: 8000}));
+
+          connectedReaderRef.current = cr || null;
+          setStatusLine('Reader connected');
+
+          const nextStatus = {
+            connected: true,
+            label: cr?.label || cr?.serialNumber || 'Stripe Reader M2',
+            serialNumber: cr?.serialNumber || null,
+            id: cr?.id || null,
+            batteryLevel:
+              normalizeBatteryPercent(cr?.batteryLevel) ??
+              latestBatteryRef.current?.batteryLevel,
+            batteryStatus:
+              cr?.batteryStatus ||
+              latestBatteryRef.current?.batteryStatus ||
+              null,
+            isCharging:
+              typeof cr?.isCharging === 'boolean'
+                ? cr.isCharging
+                : !!latestBatteryRef.current?.isCharging,
+          };
+
+          console.log('✅ bluetooth connect success, publishing:', nextStatus);
+          publishReaderStatus(nextStatus);
+
+          return true;
+        } catch (e) {
+          console.log('connectBluetoothReaderFlow error:', e);
+          setStatusLine(`Connect failed: ${String(e?.message || e)}`);
+          publishReaderStatus({
+            connected: false,
+            label: '',
+            batteryLevel: null,
+            batteryStatus: null,
+            isCharging: false,
+          });
+          if (!silent) {
+            Alert.alert('Connect Failed', String(e?.message || e));
+          }
           return false;
+        } finally {
+          try {
+            await cancelDiscovering();
+          } catch {}
         }
+      },
+      [cancelDiscovering, connectReader, discoverReaders, publishReaderStatus],
+    );
 
-        // Clean slate
+    const connectTapToPayFlow = useCallback(
+      async (opts = {}) => {
+        const silent = !!opts?.silent;
+
         try {
-          await cancelDiscovering();
-        } catch {}
+          const ok = await requestLocationPermissionIfNeeded();
+          if (!ok) return false;
 
-        discoveringRef.current = false;
-        latestReadersRef.current = [];
+          const supported = tapToPaySupportedRef.current;
+          if (supported === false) {
+            if (!silent) {
+              Alert.alert(
+                'Not supported',
+                'This device does not support Tap to Pay.',
+              );
+            }
+            return false;
+          }
 
-        // Start discovery (don’t await for results)
-        await startDiscovery();
+          if (!LOCATION_ID || !String(LOCATION_ID).startsWith('tml_')) {
+            if (!silent) {
+              Alert.alert(
+                'Location ID missing',
+                'TERMINAL_LOCATION_ID must be a valid Stripe Terminal Location (tml_...).',
+              );
+            }
+            return false;
+          }
 
-        // Wait until a reader appears
-        const readers = await waitForReaders({timeoutMs: 12000});
-        if (connectAttemptIdRef.current !== myAttemptId) return false;
+          const now = Date.now();
+          const since = now - (lastDiscoverAtRef.current || 0);
+          const cooldownMs = 15000;
 
-        const chosen =
-          readers.find(r => String(r?.deviceType || '') === 'stripeM2') ||
-          readers.find(r => !r?.simulated) ||
-          readers[0];
+          try {
+            await cancelDiscovering();
+          } catch {}
 
-        if (!chosen) {
-          setStatusLine('No reader found');
-          publishReaderStatus({connected: false, label: ''});
-          Alert.alert(
-            'No reader found',
-            '1) Make sure the M2 is powered on\n2) Make sure you did NOT pair it in Android Bluetooth settings (Forget it if you did)\n3) Bring it close and try again.',
+          setStatusLine('Discovering Tap to Pay…');
+
+          let disc;
+          if (
+            since < cooldownMs &&
+            (latestReadersRef.current || []).length > 0
+          ) {
+            disc = {reused: true};
+          } else {
+            lastDiscoverAtRef.current = now;
+            disc = await discoverTapToPayWithTimeout(9000);
+          }
+
+          if (disc?.error) {
+            throw new Error(disc.error?.message || 'discoverReaders failed');
+          }
+
+          const readers = await waitForReaders({timeoutMs: 6500});
+          const chosen = readers.find(r => !r?.simulated) || readers[0];
+
+          if (!chosen) {
+            setStatusLine('No reader found');
+            publishReaderStatus({
+              connected: false,
+              label: '',
+              batteryLevel: null,
+              batteryStatus: null,
+              isCharging: false,
+            });
+            if (!silent) {
+              Alert.alert(
+                'No reader found',
+                'Move the device slightly and try again.',
+              );
+            }
+            return false;
+          }
+
+          setStatusLine('Connecting Tap to Pay…');
+
+          const {reader, error} = await connectReader(
+            {reader: chosen, locationId: LOCATION_ID},
+            'tapToPay',
           );
+
+          if (error) {
+            throw new Error(error?.message || 'connectReader failed');
+          }
+
+          const cr = reader || (await waitForConnectedReader());
+
+          connectedReaderRef.current = cr || null;
+          setStatusLine('Reader connected');
+          publishReaderStatus({
+            connected: true,
+            label: cr?.label || cr?.serialNumber || 'Tap to Pay Connected',
+            serialNumber: cr?.serialNumber || null,
+            id: cr?.id || null,
+            batteryLevel: null,
+            batteryStatus: null,
+            isCharging: false,
+          });
+
+          return true;
+        } catch (e) {
+          console.log('connectTapToPayFlow error:', e);
+          setStatusLine(`Connect failed: ${String(e?.message || e)}`);
+          publishReaderStatus({
+            connected: false,
+            label: '',
+            batteryLevel: null,
+            batteryStatus: null,
+            isCharging: false,
+          });
+          if (!silent) {
+            Alert.alert('Connect Failed', String(e?.message || e));
+          }
           return false;
+        } finally {
+          try {
+            await cancelDiscovering();
+          } catch {}
         }
+      },
+      [cancelDiscovering, connectReader, discoverReaders, publishReaderStatus],
+    );
 
-        // Stop discovery once we’ve chosen a target
+    const connectReaderFlow = useCallback(
+      async (opts = {}) => {
+        if (connectingRef.current) return true;
+
+        connectingRef.current = true;
         try {
-          await cancelDiscovering();
-        } catch {}
+          await ensureInit();
 
-        discoveringRef.current = false;
+          const sdkReader = connectedReaderRef.current;
 
-        setStatusLine('Connecting to reader…');
+          if (sdkReader) {
+            const nextStatus = buildCurrentReaderStatus(sdkReader);
 
-        const {reader, error} = await connectReader(
-          {reader: chosen, locationId: LOCATION_ID},
-          'bluetoothScan', // ✅ Stripe RN docs use bluetoothScan
-        );
+            console.log(
+              '♻️ Reader already connected, re-publishing status:',
+              nextStatus,
+            );
+            publishReaderStatus(nextStatus);
+            return true;
+          }
 
-        if (connectAttemptIdRef.current !== myAttemptId) return false;
+          if (paymentDeviceModeRef.current === 'nfc') {
+            return await connectTapToPayFlow(opts);
+          }
 
-        if (error) {
-          throw new Error(error?.message || 'connectReader failed');
+          return await connectBluetoothReaderFlow(opts);
+        } finally {
+          connectingRef.current = false;
         }
-
-        const cr = reader || (await waitForConnectedReader({timeoutMs: 8000}));
-
-        setStatusLine('Reader connected');
-        publishReaderStatus({
-          connected: true,
-          label: cr?.label || cr?.serialNumber || 'Stripe Reader M2',
-        });
-
-        return true;
-      } catch (e) {
-        console.log('connectReaderFlow error:', e);
-        setStatusLine(`Connect failed: ${String(e?.message || e)}`);
-        publishReaderStatus({connected: false, label: ''});
-        Alert.alert('Connect Failed', String(e?.message || e));
-        return false;
-      } finally {
-        connectingRef.current = false;
-        // DO NOT auto-cancel discovery here; we already cancel at the right time.
-      }
-    }, [
-      cancelDiscovering,
-      connectReader,
-      ensureInit,
-      publishReaderStatus,
-      startDiscovery,
-    ]);
+      },
+      [
+        connectBluetoothReaderFlow,
+        connectTapToPayFlow,
+        ensureInit,
+        publishReaderStatus,
+        buildCurrentReaderStatus,
+      ],
+    );
 
     const disconnectReaderFlow = useCallback(async () => {
       try {
         try {
           await cancelDiscovering();
         } catch {}
-        discoveringRef.current = false;
-
         await disconnectReader();
         connectedReaderRef.current = null;
+        latestBatteryRef.current = {
+          batteryLevel: null,
+          batteryStatus: null,
+          isCharging: false,
+        };
         setStatusLine('Reader disconnected');
-        publishReaderStatus({connected: false, label: ''});
+        publishReaderStatus({
+          connected: false,
+          label: '',
+          batteryLevel: null,
+          batteryStatus: null,
+          isCharging: false,
+        });
       } catch (e) {
         console.log('disconnectReaderFlow error:', e);
         Alert.alert('Disconnect failed', String(e?.message || e));
       }
     }, [cancelDiscovering, disconnectReader, publishReaderStatus]);
 
+    const refreshReaderStatusFlow = useCallback(async () => {
+      if (connectingRef.current) return false;
+
+      const status = String(statusLine || '').toLowerCase();
+      const isBusyStatus =
+        status.includes('creating paymentintent') ||
+        status.includes('retrieving intent') ||
+        status.includes('present card') ||
+        status.includes('tap card now') ||
+        status.includes('processing') ||
+        status.includes('saving transaction');
+
+      if (isBusyStatus) {
+        Alert.alert(
+          'Reader busy',
+          'Please refresh only when the terminal is idle.',
+        );
+        return false;
+      }
+
+      if (paymentDeviceModeRef.current !== 'reader') {
+        return false;
+      }
+
+      try {
+        connectingRef.current = true;
+        setStatusLine('Refreshing reader status…');
+
+        try {
+          await cancelDiscovering();
+        } catch {}
+
+        try {
+          await disconnectReader();
+        } catch (e) {
+          console.log('refreshReaderStatusFlow disconnect warning:', e);
+        }
+
+        connectedReaderRef.current = null;
+        latestBatteryRef.current = {
+          batteryLevel: null,
+          batteryStatus: null,
+          isCharging: false,
+        };
+
+        publishReaderStatus({
+          connected: false,
+          label: '',
+          batteryLevel: null,
+          batteryStatus: null,
+          isCharging: false,
+        });
+
+        await new Promise(r => setTimeout(r, 1000));
+
+        const ok = await connectBluetoothReaderFlow({silent: true});
+        if (!ok) {
+          setStatusLine('Refresh failed');
+          return false;
+        }
+
+        setStatusLine('Reader refreshed');
+        return true;
+      } catch (e) {
+        console.log('refreshReaderStatusFlow error:', e);
+        setStatusLine(`Refresh failed: ${String(e?.message || e)}`);
+        Alert.alert('Refresh failed', String(e?.message || e));
+        return false;
+      } finally {
+        connectingRef.current = false;
+      }
+    }, [
+      statusLine,
+      cancelDiscovering,
+      disconnectReader,
+      publishReaderStatus,
+      connectBluetoothReaderFlow,
+    ]);
+
+    useEffect(() => {
+      const sub = AppState.addEventListener('change', nextState => {
+        if (nextState === 'active') {
+          setTimeout(() => {
+            connectReaderFlow({silent: true});
+          }, 400);
+        }
+      });
+      return () => sub?.remove?.();
+    }, [connectReaderFlow]);
+
     const startCardPayment = useCallback(async () => {
       try {
         await ensureInit();
 
         if (!connectedReaderRef.current) {
-          setStatusLine('Reader not connected — connecting…');
-          const ok = await connectReaderFlow();
-          if (!ok) return;
-          await waitForConnectedReader({timeoutMs: 8000});
+          setStatusLine(
+            paymentDeviceModeRef.current === 'nfc'
+              ? 'Phone NFC not connected — connecting…'
+              : 'Reader not connected — connecting…',
+          );
+
+          const ok = await connectReaderFlow({silent: true});
+          if (!ok) {
+            Alert.alert(
+              paymentDeviceModeRef.current === 'nfc'
+                ? 'Phone NFC not connected'
+                : 'Reader not connected',
+              'Tap CONNECT on the terminal screen, then try again.',
+            );
+            return;
+          }
+          await waitForConnectedReader({timeoutMs: 5000});
         }
 
         if (!connectedReaderRef.current) {
@@ -667,7 +1094,12 @@ const PaymentTerminal = forwardRef(
         if (retrieved?.error)
           throw new Error(retrieved.error?.message || 'Retrieve intent failed');
 
-        setStatusLine('Present card…');
+        setStatusLine(
+          paymentDeviceModeRef.current === 'nfc'
+            ? 'Tap card now… (back of device)'
+            : 'Present card…',
+        );
+
         const collected = await collectPaymentMethod({
           paymentIntent: retrieved?.paymentIntent,
         });
@@ -717,6 +1149,7 @@ const PaymentTerminal = forwardRef(
             tipCents,
             serviceFeeCents,
             ...(uiComment ? {note: uiComment} : {}),
+            paymentDeviceMode: paymentDeviceModeRef.current,
           },
           breakdown: breakdown || null,
           descriptionSentToStripe: stripeDescription,
@@ -732,6 +1165,21 @@ const PaymentTerminal = forwardRef(
           stripeReturnedObject: JSON.stringify(pi || {}),
           clientEpochMs: Date.now(),
         };
+
+        try {
+          const charges = Array.isArray(pi?.charges) ? pi.charges : [];
+          const ch = charges[0] || null;
+          if (ch?.id) txnPayload.stripe.chargeId = ch.id;
+
+          const pmDetails = ch?.paymentMethodDetails || {};
+          const cp = pmDetails?.cardPresentDetails || {};
+          const cardPresent = pmDetails?.cardPresent || cp;
+          const brand = cardPresent?.brand || cp?.brand;
+          const last4 = cardPresent?.last4 || cp?.last4;
+
+          if (brand) txnPayload.brand = String(brand);
+          if (last4) txnPayload.last4 = String(last4);
+        } catch {}
 
         try {
           setStatusLine('Saving transaction…');
@@ -758,6 +1206,8 @@ const PaymentTerminal = forwardRef(
           corporateName,
           storeRef,
           storeName,
+          brand: txnPayload.brand || null,
+          last4: txnPayload.last4 || null,
           stripe: {
             paymentIntentId: pi?.id || null,
             status: pi?.status || null,
@@ -769,6 +1219,7 @@ const PaymentTerminal = forwardRef(
           createdAtText: new Date().toLocaleString(),
         });
       } catch (e) {
+        console.log('startCardPayment error:', e);
         setStatusLine(`Payment failed: ${String(e?.message || e)}`);
         Alert.alert('Payment failed', String(e?.message || e));
       }
@@ -792,6 +1243,7 @@ const PaymentTerminal = forwardRef(
         ensureInit,
         connectReaderFlow,
         disconnectReaderFlow,
+        refreshReaderStatusFlow,
         startCardPayment,
         isReaderConnected: () => !!connectedReaderRef.current,
         getStatusLine: () => statusLine,
@@ -799,6 +1251,7 @@ const PaymentTerminal = forwardRef(
       [
         connectReaderFlow,
         disconnectReaderFlow,
+        refreshReaderStatusFlow,
         ensureInit,
         startCardPayment,
         statusLine,
@@ -807,17 +1260,19 @@ const PaymentTerminal = forwardRef(
 
     useEffect(() => {
       if (connectedReader) {
-        publishReaderStatus({
-          connected: true,
-          label:
-            connectedReader?.label ||
-            connectedReader?.serialNumber ||
-            'Stripe Reader M2',
-        });
+        const nextStatus = buildCurrentReaderStatus(connectedReader);
+        console.log('🔌 connectedReader effect publishing:', nextStatus);
+        publishReaderStatus(nextStatus);
       } else {
-        publishReaderStatus({connected: false, label: ''});
+        publishReaderStatus({
+          connected: false,
+          label: '',
+          batteryLevel: null,
+          batteryStatus: null,
+          isCharging: false,
+        });
       }
-    }, [connectedReader, publishReaderStatus]);
+    }, [connectedReader, publishReaderStatus, buildCurrentReaderStatus]);
 
     return null;
   },

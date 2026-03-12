@@ -50,12 +50,78 @@ function centsToMoney(cents) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
+function normalizeBatteryPercent(readerStatus) {
+  const raw = readerStatus?.batteryLevel;
+
+  if (typeof raw !== 'number' || Number.isNaN(raw)) return null;
+
+  if (raw >= 0 && raw <= 1) {
+    return Math.round(raw * 100);
+  }
+
+  if (raw >= 0 && raw <= 100) {
+    return Math.round(raw);
+  }
+
+  return null;
+}
+
+function getBatteryColor(percent) {
+  if (typeof percent !== 'number') return '#9ca3af';
+
+  if (percent <= 30) return '#ef4444';
+  if (percent <= 50) return '#facc15';
+  return '#22c55e';
+}
+
+function BatteryBar({percent, borderColor}) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent || 0)));
+  const fillColor = getBatteryColor(safePercent);
+
+  return (
+    <View style={{flexDirection: 'row', alignItems: 'center'}}>
+      <View
+        style={{
+          width: 34,
+          height: 16,
+          borderWidth: 1.5,
+          borderColor,
+          borderRadius: 4,
+          padding: 2,
+          justifyContent: 'center',
+        }}>
+        <View
+          style={{
+            width: `${safePercent}%`,
+            height: 8,
+            backgroundColor: fillColor,
+            borderRadius: 2,
+          }}
+        />
+      </View>
+
+      <View
+        style={{
+          width: 3,
+          height: 8,
+          marginLeft: 2,
+          borderRadius: 1,
+          backgroundColor: borderColor,
+        }}
+      />
+    </View>
+  );
+}
+
 export default function TerminalScreen({
   onGoToTip,
   onGoToSales,
   onGoToTransactions,
   onConnectReader,
   onDisconnectReader,
+  onRefreshReaderStatus,
+  onSetPaymentDeviceMode,
+  paymentDeviceMode = 'reader',
   readerStatus,
   isReaderBusy,
   chargeData,
@@ -65,10 +131,12 @@ export default function TerminalScreen({
   const s = terminalStyles;
   const [sel, setSel] = useState(null);
   const [comment, setComment] = useState('');
+  const [batteryTapCount, setBatteryTapCount] = useState(0);
 
   const didPresentRef = useRef(false);
   const didSuccessRef = useRef(false);
   const didFailRef = useRef(false);
+  const batteryTapTimerRef = useRef(null);
 
   const t = useMemo(() => {
     return {
@@ -122,6 +190,15 @@ export default function TerminalScreen({
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (batteryTapTimerRef.current) {
+        clearTimeout(batteryTapTimerRef.current);
+        batteryTapTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const connected = !!readerStatus?.connected;
 
   const subtitle = useMemo(() => {
@@ -129,16 +206,40 @@ export default function TerminalScreen({
     return st;
   }, [sel]);
 
-  const readerDisplayLabel = connected ? 'Alba M2 Connected' : 'No reader';
+  const readerDisplayLabel = useMemo(() => {
+    if (!connected) return 'No reader';
+    return paymentDeviceMode === 'nfc'
+      ? 'Phone NFC Connected'
+      : 'Alba M2 Connected';
+  }, [connected, paymentDeviceMode]);
 
   const readerRevealText = useMemo(() => {
     const serial =
       readerStatus?.serialNumber ||
       readerStatus?.label ||
       readerStatus?.id ||
-      'Unknown';
+      (paymentDeviceMode === 'nfc' ? 'Tap to Pay on this device' : 'Unknown');
     return String(serial);
-  }, [readerStatus]);
+  }, [readerStatus, paymentDeviceMode]);
+
+  const batteryPercent = useMemo(() => {
+    if (!connected) return null;
+    if (paymentDeviceMode !== 'reader') return null;
+    return normalizeBatteryPercent(readerStatus);
+  }, [connected, paymentDeviceMode, readerStatus]);
+
+  const batteryColor = useMemo(() => {
+    return getBatteryColor(batteryPercent);
+  }, [batteryPercent]);
+
+  const isCharging = useMemo(() => {
+    return (
+      connected &&
+      paymentDeviceMode === 'reader' &&
+      batteryPercent !== null &&
+      readerStatus?.isCharging === true
+    );
+  }, [connected, paymentDeviceMode, batteryPercent, readerStatus]);
 
   const totalCents = Number(chargeData?.totalCents || 0);
   const totalLabel =
@@ -150,10 +251,12 @@ export default function TerminalScreen({
     return String(terminalStatusLine || bigStatus || '').toLowerCase();
   }, [terminalStatusLine, bigStatus]);
 
-  const isPresentCard = useMemo(
-    () => statusLower.includes('present card'),
-    [statusLower],
-  );
+  const isPresentCard = useMemo(() => {
+    return (
+      statusLower.includes('present card') ||
+      statusLower.includes('tap card now')
+    );
+  }, [statusLower]);
 
   const isPaymentSuccess = useMemo(() => {
     return (
@@ -178,7 +281,8 @@ export default function TerminalScreen({
     if (
       statusLower.includes('creating paymentintent') ||
       statusLower.includes('retrieving intent') ||
-      statusLower.includes('present card')
+      statusLower.includes('present card') ||
+      statusLower.includes('tap card now')
     ) {
       didSuccessRef.current = false;
       didFailRef.current = false;
@@ -219,6 +323,41 @@ export default function TerminalScreen({
       didFailRef.current = false;
     }
   }, [isPaymentFailed, playRawSound]);
+
+  const handleBatteryPress = async () => {
+    if (isReaderBusy) return;
+
+    const nextCount = batteryTapCount + 1;
+    setBatteryTapCount(nextCount);
+
+    if (batteryTapTimerRef.current) {
+      clearTimeout(batteryTapTimerRef.current);
+    }
+
+    if (nextCount >= 3) {
+      setBatteryTapCount(0);
+      batteryTapTimerRef.current = null;
+
+      try {
+        await onRefreshReaderStatus?.();
+      } catch (e) {
+        Alert.alert('Refresh failed', String(e?.message || e));
+      }
+      return;
+    }
+
+    batteryTapTimerRef.current = setTimeout(() => {
+      setBatteryTapCount(0);
+      batteryTapTimerRef.current = null;
+    }, 2500);
+  };
+
+  const batteryHelpText =
+    batteryTapCount > 0 && batteryTapCount < 3
+      ? `Tap ${3 - batteryTapCount} more ${
+          3 - batteryTapCount === 1 ? 'time' : 'times'
+        } to refresh`
+      : null;
 
   return (
     <View style={[s.screen, {backgroundColor: screenBg}]}>
@@ -265,20 +404,132 @@ export default function TerminalScreen({
             </Pressable>
           </View>
 
+          <View
+            style={{
+              marginTop: 12,
+              flexDirection: 'row',
+              gap: 10,
+            }}>
+            <Pressable
+              onPress={() => onSetPaymentDeviceMode?.('reader')}
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: paymentDeviceMode === 'reader' ? t.gold : t.border,
+                backgroundColor:
+                  paymentDeviceMode === 'reader' ? inputBg : t.inputBg,
+                borderRadius: 12,
+                paddingVertical: 12,
+                alignItems: 'center',
+              }}>
+              <Text
+                style={{
+                  color: paymentDeviceMode === 'reader' ? t.gold : t.text,
+                  fontWeight: '900',
+                }}>
+                Reader
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => onSetPaymentDeviceMode?.('nfc')}
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: paymentDeviceMode === 'nfc' ? t.gold : t.border,
+                backgroundColor:
+                  paymentDeviceMode === 'nfc' ? inputBg : t.inputBg,
+                borderRadius: 12,
+                paddingVertical: 12,
+                alignItems: 'center',
+              }}>
+              <Text
+                style={{
+                  color: paymentDeviceMode === 'nfc' ? t.gold : t.text,
+                  fontWeight: '900',
+                }}>
+                Phone NFC
+              </Text>
+            </Pressable>
+          </View>
+
           <View style={s.dividerTop}>
             <View style={s.row}>
-              <Text style={[s.rowLabel, {color: t.muted}]}>Reader</Text>
+              <Text style={[s.rowLabel, {color: t.muted}]}>
+                {paymentDeviceMode === 'nfc' ? 'NFC' : 'Reader'}
+              </Text>
 
               <Pressable
                 onPress={() => {
                   if (!connected) return;
-                  Alert.alert('Stripe Reader', readerRevealText);
+                  Alert.alert(
+                    paymentDeviceMode === 'nfc'
+                      ? 'Phone NFC Details'
+                      : 'Stripe Reader',
+                    readerRevealText,
+                  );
                 }}>
                 <Text style={[s.rowValue, {color: t.text}]}>
                   {readerDisplayLabel}
                 </Text>
               </Pressable>
             </View>
+
+            {connected &&
+            paymentDeviceMode === 'reader' &&
+            batteryPercent !== null ? (
+              <>
+                <View
+                  style={[
+                    s.row,
+                    {
+                      marginTop: 8,
+                      alignItems: 'center',
+                    },
+                  ]}>
+                  <Text style={[s.rowLabel, {color: t.muted}]}>Battery</Text>
+
+                  <Pressable
+                    onPress={handleBatteryPress}
+                    hitSlop={10}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}>
+                    <BatteryBar
+                      percent={batteryPercent}
+                      borderColor={t.border}
+                    />
+                    <Text style={[s.rowValue, {color: batteryColor}]}>
+                      {batteryPercent}%
+                    </Text>
+                    {isCharging ? (
+                      <Text
+                        style={{
+                          color: t.gold,
+                          fontWeight: '800',
+                          fontSize: 12,
+                        }}>
+                        Charging
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                </View>
+
+                {batteryHelpText ? (
+                  <Text
+                    style={{
+                      marginTop: 6,
+                      color: t.muted,
+                      fontSize: 11,
+                      textAlign: 'right',
+                    }}>
+                    {batteryHelpText}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
 
             {bigStatus ? (
               <Text
