@@ -140,16 +140,20 @@ function getCardLast4(t) {
   ).trim();
 }
 
-function isToday(epochMs) {
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function isSameDay(epochMs, selectedDate) {
   if (!epochMs) return false;
 
-  const d = new Date(epochMs);
-  const now = new Date();
-
+  const txnDate = new Date(epochMs);
   return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
+    txnDate.getFullYear() === selectedDate.getFullYear() &&
+    txnDate.getMonth() === selectedDate.getMonth() &&
+    txnDate.getDate() === selectedDate.getDate()
   );
 }
 
@@ -164,6 +168,25 @@ function formatTime(epochMs) {
 function formatCreatedAtText(epochMs) {
   if (!epochMs) return '';
   return new Date(epochMs).toLocaleString();
+}
+
+function formatSelectedDayLabel(date) {
+  const today = startOfDay(new Date());
+  const selected = startOfDay(date);
+
+  const diffDays = Math.round(
+    (today.getTime() - selected.getTime()) / 86400000,
+  );
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(selected);
 }
 
 function extractStoreName(selection) {
@@ -330,11 +353,12 @@ function buildReceiptHtmlFromTxn(txn, storeNameOverride = '') {
 /* ---------------- SCREEN ---------------- */
 
 export default function TodayTransactionsScreen({onBack, theme}) {
-  const [rows, setRows] = useState([]);
+  const [allRows, setAllRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState('');
   const [storeName, setStoreName] = useState('Store');
+  const [selectedDate, setSelectedDate] = useState(startOfDay(new Date()));
 
   const [selectedTxn, setSelectedTxn] = useState(null);
   const [emailModalVisible, setEmailModalVisible] = useState(false);
@@ -384,13 +408,12 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
       const filtered = arr
         .filter(txn => !isPayoutEventRow(txn))
-        .filter(txn => isToday(getEpochMs(txn)))
         .sort((a, b) => getEpochMs(b) - getEpochMs(a));
 
-      setRows(filtered);
+      setAllRows(filtered);
     } catch (e) {
       setErr(String(e?.message || e));
-      setRows([]);
+      setAllRows([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -401,9 +424,41 @@ export default function TodayTransactionsScreen({onBack, theme}) {
     loadTransactions(false);
   }, [loadTransactions]);
 
-  const totalTodayCents = useMemo(() => {
+  const rows = useMemo(() => {
+    return allRows.filter(txn => isSameDay(getEpochMs(txn), selectedDate));
+  }, [allRows, selectedDate]);
+
+  const totalSelectedDayCents = useMemo(() => {
     return rows.reduce((sum, txn) => sum + getTxnAmountCents(txn), 0);
   }, [rows]);
+
+  const selectedDayLabel = useMemo(() => {
+    return formatSelectedDayLabel(selectedDate);
+  }, [selectedDate]);
+
+  const canGoForward = useMemo(() => {
+    return (
+      startOfDay(selectedDate).getTime() < startOfDay(new Date()).getTime()
+    );
+  }, [selectedDate]);
+
+  const goPreviousDay = () => {
+    setSelectedDate(prev => {
+      const next = new Date(prev);
+      next.setDate(next.getDate() - 1);
+      return startOfDay(next);
+    });
+  };
+
+  const goNextDay = () => {
+    if (!canGoForward) return;
+
+    setSelectedDate(prev => {
+      const next = new Date(prev);
+      next.setDate(next.getDate() + 1);
+      return startOfDay(next);
+    });
+  };
 
   const openEmailModal = txn => {
     setSelectedTxn(txn);
@@ -564,7 +619,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
   return (
     <View style={{flex: 1, backgroundColor: t.bg, padding: 16}}>
-      {/* HEADER */}
       <View
         style={{
           flexDirection: 'row',
@@ -585,7 +639,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
         </Pressable>
       </View>
 
-      {/* CARD */}
       <View
         style={{
           flex: 1,
@@ -601,9 +654,56 @@ export default function TodayTransactionsScreen({onBack, theme}) {
 
         <Text style={{color: t.muted}}>{storeName}</Text>
 
-        <Text style={{color: t.gold, fontWeight: '800', marginVertical: 10}}>
-          Total Today: {centsToUsd(totalTodayCents)}
-        </Text>
+        <View
+          style={{
+            marginTop: 14,
+            marginBottom: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+          }}>
+          <Pressable
+            onPress={goPreviousDay}
+            style={{
+              backgroundColor: t.inputBg,
+              borderColor: t.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            }}>
+            <Text style={{color: t.text, fontWeight: '900'}}>←</Text>
+          </Pressable>
+
+          <View style={{flex: 1, alignItems: 'center'}}>
+            <Text style={{color: t.gold, fontWeight: '900', fontSize: 16}}>
+              {selectedDayLabel}
+            </Text>
+            <Text style={{color: t.muted, marginTop: 4}}>
+              Total: {centsToUsd(totalSelectedDayCents)}
+            </Text>
+          </View>
+
+          <Pressable
+            onPress={goNextDay}
+            disabled={!canGoForward}
+            style={{
+              backgroundColor: t.inputBg,
+              borderColor: t.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+              opacity: canGoForward ? 1 : 0.4,
+            }}>
+            <Text style={{color: t.text, fontWeight: '900'}}>→</Text>
+          </Pressable>
+        </View>
+
+        {err ? (
+          <Text style={{color: t.danger, marginBottom: 10}}>{err}</Text>
+        ) : null}
 
         {loading ? (
           <ActivityIndicator color={t.gold} />
@@ -621,11 +721,17 @@ export default function TodayTransactionsScreen({onBack, theme}) {
                 tintColor={t.gold}
               />
             }
+            ListEmptyComponent={
+              <View style={{paddingVertical: 30, alignItems: 'center'}}>
+                <Text style={{color: t.muted}}>
+                  No transactions for this day.
+                </Text>
+              </View>
+            }
           />
         )}
       </View>
 
-      {/* FLOATING REFRESH BUTTON */}
       <Pressable
         onPress={() => loadTransactions(false)}
         style={{
@@ -644,7 +750,6 @@ export default function TodayTransactionsScreen({onBack, theme}) {
         <Text style={{fontSize: 24, color: t.gold}}>🔄</Text>
       </Pressable>
 
-      {/* EMAIL MODAL */}
       <Modal
         visible={emailModalVisible}
         transparent

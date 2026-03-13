@@ -352,13 +352,6 @@ export default function TerminalScreen({
     }, 2500);
   };
 
-  const batteryHelpText =
-    batteryTapCount > 0 && batteryTapCount < 3
-      ? `Tap ${3 - batteryTapCount} more ${
-          3 - batteryTapCount === 1 ? 'time' : 'times'
-        } to refresh`
-      : null;
-
   return (
     <View style={[s.screen, {backgroundColor: screenBg}]}>
       <View style={s.content}>
@@ -454,10 +447,47 @@ export default function TerminalScreen({
           </View>
 
           <View style={s.dividerTop}>
-            <View style={s.row}>
+            <View
+              style={[
+                s.row,
+                {
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                },
+              ]}>
               <Text style={[s.rowLabel, {color: t.muted}]}>
                 {paymentDeviceMode === 'nfc' ? 'NFC' : 'Reader'}
               </Text>
+
+              {connected &&
+              paymentDeviceMode === 'reader' &&
+              batteryPercent !== null ? (
+                <Pressable
+                  onPress={handleBatteryPress}
+                  hitSlop={10}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}>
+                  <BatteryBar percent={batteryPercent} borderColor={t.border} />
+
+                  <Text style={[s.rowValue, {color: batteryColor}]}>
+                    {batteryPercent}%
+                  </Text>
+
+                  {isCharging ? (
+                    <Text
+                      style={{
+                        color: t.gold,
+                        fontWeight: '800',
+                        fontSize: 12,
+                      }}>
+                      Charging
+                    </Text>
+                  ) : null}
+                </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={() => {
@@ -474,62 +504,6 @@ export default function TerminalScreen({
                 </Text>
               </Pressable>
             </View>
-
-            {connected &&
-            paymentDeviceMode === 'reader' &&
-            batteryPercent !== null ? (
-              <>
-                <View
-                  style={[
-                    s.row,
-                    {
-                      marginTop: 8,
-                      alignItems: 'center',
-                    },
-                  ]}>
-                  <Text style={[s.rowLabel, {color: t.muted}]}>Battery</Text>
-
-                  <Pressable
-                    onPress={handleBatteryPress}
-                    hitSlop={10}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}>
-                    <BatteryBar
-                      percent={batteryPercent}
-                      borderColor={t.border}
-                    />
-                    <Text style={[s.rowValue, {color: batteryColor}]}>
-                      {batteryPercent}%
-                    </Text>
-                    {isCharging ? (
-                      <Text
-                        style={{
-                          color: t.gold,
-                          fontWeight: '800',
-                          fontSize: 12,
-                        }}>
-                        Charging
-                      </Text>
-                    ) : null}
-                  </Pressable>
-                </View>
-
-                {batteryHelpText ? (
-                  <Text
-                    style={{
-                      marginTop: 6,
-                      color: t.muted,
-                      fontSize: 11,
-                      textAlign: 'right',
-                    }}>
-                    {batteryHelpText}
-                  </Text>
-                ) : null}
-              </>
-            ) : null}
 
             {bigStatus ? (
               <Text
