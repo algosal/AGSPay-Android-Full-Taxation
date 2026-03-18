@@ -1,4 +1,5 @@
 // FILE: components/Checkout/CheckoutScreen.js
+
 import React, {useEffect, useMemo, useState} from 'react';
 import {Alert, View, Text, Pressable, StyleSheet} from 'react-native';
 import {pressFX, androidRipple} from '../ui/pressFX';
@@ -29,44 +30,66 @@ export default function CheckoutScreen({
     return {bg, card, inputBg, text, muted, border, gold, goldText, altCard};
   }, [theme]);
 
-  // ✅ DEFAULT TO CARD (but still respects chargeData.method if it is set)
+  // Default payment method
   const [method, setMethod] = useState(() => {
     const m = String(chargeData?.method || 'CARD').toUpperCase();
     return m === 'CASH' ? 'CASH' : 'CARD';
   });
 
-  // ✅ NEW: international toggle (defaults from chargeData if provided)
+  // International card toggle
   const [isInternational, setIsInternational] = useState(() => {
     return Boolean(chargeData?.isInternational || false);
   });
 
-  // ✅ If chargeData changes later, re-sync (keeps UI correct)
+  // NEW: taxation toggle
+  const [taxEnabled, setTaxEnabled] = useState(() => {
+    const incomingTax = Number(chargeData?.taxCents || 0);
+    return incomingTax > 0;
+  });
+
+  // Sync method if parent data changes
   useEffect(() => {
     const m = String(chargeData?.method || 'CARD').toUpperCase();
     setMethod(m === 'CASH' ? 'CASH' : 'CARD');
   }, [chargeData?.method]);
 
-  // ✅ Keep toggle in sync if parent provides it (optional)
+  // Sync international toggle from parent if present
   useEffect(() => {
     if (typeof chargeData?.isInternational === 'boolean') {
       setIsInternational(chargeData.isInternational);
     }
   }, [chargeData?.isInternational]);
 
-  // ✅ When switching away from CARD, clear international flag (avoids accidental fees)
+  // Sync taxation toggle from parent tax amount
+  useEffect(() => {
+    const incomingTax = Number(chargeData?.taxCents || 0);
+    setTaxEnabled(incomingTax > 0);
+  }, [chargeData?.taxCents]);
+
+  // Clear international flag when not card
   useEffect(() => {
     if (method !== 'CARD' && isInternational) setIsInternational(false);
-  }, [method]); // intentionally not depending on isInternational
+  }, [method]);
 
   const data = useMemo(() => {
     const d = chargeData || {};
 
     const subtotalCents = Number(d.subtotalCents || 0);
-    const taxCents = Number(d.taxCents || 0);
+
+    // infer tax rate from incoming numbers so App.js does not need changes
+    const originalTaxCents = Number(d.taxCents || 0);
+    const inferredTaxRate =
+      subtotalCents > 0 && originalTaxCents > 0
+        ? originalTaxCents / subtotalCents
+        : 0;
+
+    const taxCents = taxEnabled
+      ? Math.round(subtotalCents * inferredTaxRate)
+      : 0;
+
     const albaFeeCents = Number(d.albaFeeCents || 0);
     const tipCents = Number(d.tipCents || 0);
 
-    // ✅ Conditional $1 International Fee ONLY if CARD + toggle ON
     const internationalFeeCents =
       method === 'CARD' && isInternational ? 100 : 0;
 
@@ -87,7 +110,7 @@ export default function CheckoutScreen({
       totalLabel: centsToMoney(totalCents),
       raw: d,
     };
-  }, [chargeData, method, isInternational]);
+  }, [chargeData, method, isInternational, taxEnabled]);
 
   const confirmLabel =
     method === 'CASH' ? 'Complete Cash & Email Receipt' : 'Charge Card';
@@ -158,7 +181,26 @@ export default function CheckoutScreen({
           </Pressable>
         </View>
 
-        {/* ✅ NEW: International toggle (only when CARD) */}
+        {/* NEW: Taxation button */}
+        <View style={s.taxRow}>
+          <Pressable
+            onPress={() => setTaxEnabled(v => !v)}
+            {...androidRipple('rgba(250,204,21,0.12)')}
+            style={({pressed}) => [
+              s.taxBtn,
+              {borderColor: t.border, backgroundColor: t.altCard},
+              taxEnabled
+                ? {borderColor: t.gold, backgroundColor: t.inputBg}
+                : null,
+              pressFX({pressed}),
+            ]}>
+            <Text style={[s.taxText, {color: taxEnabled ? t.gold : t.text}]}>
+              {taxEnabled ? 'Taxation: ON' : 'Taxation: OFF'}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* International toggle for card only */}
         {method === 'CARD' ? (
           <View style={s.intlRow}>
             <Pressable
@@ -207,7 +249,6 @@ export default function CheckoutScreen({
             value={centsToMoney(data.albaFeeCents)}
           />
 
-          {/* ✅ Only show fee row if applied */}
           {data.internationalFeeCents > 0 ? (
             <Row
               themeT={t}
@@ -242,6 +283,8 @@ export default function CheckoutScreen({
             const payload = {
               ...(data.raw || {}),
               method,
+              taxEnabled,
+              taxCents: data.taxCents,
               isInternational:
                 method === 'CARD' ? Boolean(isInternational) : false,
               internationalFeeCents: data.internationalFeeCents,
@@ -349,7 +392,15 @@ const s = StyleSheet.create({
   },
   methodText: {fontWeight: '900'},
 
-  // ✅ NEW international toggle layout
+  taxRow: {marginTop: 10},
+  taxBtn: {
+    borderWidth: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  taxText: {fontWeight: '900', fontSize: 13},
+
   intlRow: {marginTop: 10},
   intlBtn: {
     borderWidth: 1,
